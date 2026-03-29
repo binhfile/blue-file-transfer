@@ -1,0 +1,10 @@
+/bft
+/bft-linux-amd64
+/bft-windows-amd64.exe
+/rawbench
+coverage.out
+coverage.html
+testdata/server_root/*.bin
+testdata/client_download/
+*.bin
+*.wav
