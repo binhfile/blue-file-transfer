@@ -5,6 +5,8 @@ package bt
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -37,6 +39,50 @@ type l2capOpts struct {
 	FCS       uint8
 	MaxTX     uint8
 	TxWinSize uint16
+}
+
+// parseBTAddrL2CAP parses "AA:BB:CC:DD:EE:FF" into [6]byte in MSB-first order.
+// Note: SockaddrL2.Addr uses a different byte order than SockaddrRFCOMM.Addr.
+// RFCOMM stores bytes reversed (LSB first), L2CAP stores them as-is (MSB first).
+func parseBTAddrL2CAP(addr string) ([6]byte, error) {
+	var result [6]byte
+	parts := strings.Split(addr, ":")
+	if len(parts) != 6 {
+		return result, fmt.Errorf("invalid bluetooth address: %s", addr)
+	}
+	for i, p := range parts {
+		b, err := strconv.ParseUint(p, 16, 8)
+		if err != nil {
+			return result, fmt.Errorf("invalid bluetooth address byte %q: %w", p, err)
+		}
+		result[i] = byte(b)
+	}
+	return result, nil
+}
+
+// resolveAdapterL2CAP resolves adapter name to BD address in L2CAP byte order.
+func resolveAdapterL2CAP(adapter string) ([6]byte, error) {
+	if adapter == "" || adapter == "any" {
+		return [6]byte{}, nil
+	}
+
+	// Get RFCOMM-order address then reverse for L2CAP
+	rfcommAddr, err := resolveAdapter(adapter)
+	if err != nil {
+		return [6]byte{}, err
+	}
+	// Reverse: RFCOMM [5-i] -> L2CAP [i]
+	var l2capAddr [6]byte
+	for i := 0; i < 6; i++ {
+		l2capAddr[i] = rfcommAddr[5-i]
+	}
+	return l2capAddr, nil
+}
+
+// formatBTAddrL2CAP formats L2CAP byte-order address to string.
+func formatBTAddrL2CAP(addr [6]byte) string {
+	return fmt.Sprintf("%02X:%02X:%02X:%02X:%02X:%02X",
+		addr[0], addr[1], addr[2], addr[3], addr[4], addr[5])
 }
 
 // L2CAPTransport implements Transport using Linux L2CAP sockets.
@@ -184,7 +230,7 @@ func (l *l2capListener) Accept() (Conn, error) {
 
 	remoteAddr := "unknown"
 	if rsa, ok := sa.(*unix.SockaddrL2); ok {
-		remoteAddr = formatBTAddr(rsa.Addr)
+		remoteAddr = formatBTAddrL2CAP(rsa.Addr)
 	}
 
 	_ = unix.SetsockoptInt(nfd, unix.SOL_SOCKET, unix.SO_SNDBUF, sockBufSize)
@@ -204,7 +250,7 @@ func (l *l2capListener) Addr() string {
 // --- Transport methods ---
 
 func (t *L2CAPTransport) Listen(adapter string, channel uint8) (Listener, error) {
-	adapterAddr, err := resolveAdapter(adapter)
+	adapterAddr, err := resolveAdapterL2CAP(adapter)
 	if err != nil {
 		return nil, fmt.Errorf("resolve adapter: %w", err)
 	}
@@ -246,17 +292,17 @@ func (t *L2CAPTransport) Listen(adapter string, channel uint8) (Listener, error)
 		return nil, fmt.Errorf("listen: %w", err)
 	}
 
-	localAddr := formatBTAddr(adapterAddr)
+	localAddr := formatBTAddrL2CAP(adapterAddr)
 	return &l2capListener{fd: fd, addr: localAddr, psm: psm}, nil
 }
 
 func (t *L2CAPTransport) Connect(adapter string, remoteAddr string, channel uint8) (Conn, error) {
-	adapterAddr, err := resolveAdapter(adapter)
+	adapterAddr, err := resolveAdapterL2CAP(adapter)
 	if err != nil {
 		return nil, fmt.Errorf("resolve adapter: %w", err)
 	}
 
-	targetAddr, err := parseBTAddr(remoteAddr)
+	targetAddr, err := parseBTAddrL2CAP(remoteAddr)
 	if err != nil {
 		return nil, fmt.Errorf("parse remote address: %w", err)
 	}
