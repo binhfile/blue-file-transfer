@@ -9,6 +9,8 @@
 - [Hardware Setup](#hardware-setup)
 - [Authentication & Encryption](#authentication--encryption)
 - [Usage](#usage)
+  - [One-shot Commands](#one-shot-commands)
+  - [Interactive Client](#interactive-client)
 - [Benchmark](#benchmark)
 - [Troubleshooting](#troubleshooting)
 
@@ -367,9 +369,65 @@ Client                              Server
 | Auth tag | 16 bytes per frame |
 | Forward secrecy | Per-session (random nonces) |
 
+### Hardware Acceleration
+
+AES-256-GCM uses hardware crypto instructions on all supported platforms — no software fallback needed:
+
+| Platform | CPU Feature | Instructions | Auto-detected |
+|----------|-------------|-------------|---------------|
+| x86_64 | AES-NI | `AESENC`/`AESDEC`, `PCLMULQDQ` | Yes |
+| ARM64 (Jetson, RPi4+) | ARMv8 Crypto | `AESE`/`AESD`/`AESMC`, `PMULL` | Yes |
+| ARM64 | SHA2 | `SHA256H` | Yes (HKDF) |
+| x86_64 / ARM64 | CRC32 | `CRC32` hardware instruction | Yes (chunk integrity) |
+
+Go's `crypto/aes` and `hash/crc32` packages detect these features at runtime. Encryption overhead is minimal (~10%: 1.34 Mbps encrypted vs 1.50 Mbps unencrypted on Bluetooth L2CAP).
+
 ---
 
 ## Usage
+
+### One-shot Commands
+
+Run a single command without entering the interactive shell. Connects, authenticates, encrypts, executes, and exits:
+
+```bash
+# List files on remote server
+bft ls --server 00:1A:7D:DA:71:22 --user admin --pass secret
+
+# Download a file
+bft download --server 00:1A:7D:DA:71:22 --path document.pdf --local /tmp
+
+# Upload a file
+bft upload --server 00:1A:7D:DA:71:22 --path ./backup.tar.gz
+
+# Execute remote command (exit code propagated to shell)
+bft exec --server 00:1A:7D:DA:71:22 --cmd "df -h /"
+
+# File operations
+bft mkdir --server 00:1A:7D:DA:71:22 --path newdir
+bft rm    --server 00:1A:7D:DA:71:22 --path oldfile.txt
+bft cp    --server 00:1A:7D:DA:71:22 --src a.txt --dst b.txt
+bft mv    --server 00:1A:7D:DA:71:22 --src old --dst new
+bft info  --server 00:1A:7D:DA:71:22 --path file.bin
+bft pwd   --server 00:1A:7D:DA:71:22
+```
+
+All one-shot commands support `--user`, `--pass`, `--channel`, `--rfcomm`, `--no-compress`, `--adapter`.
+
+Use in scripts:
+```bash
+#!/bin/bash
+SERVER="00:1A:7D:DA:71:22"
+AUTH="--user admin --pass secret"
+
+# Backup remote logs
+bft download --server $SERVER $AUTH --path /var/log/syslog --local ./backups/
+bft exec --server $SERVER $AUTH --cmd "logrotate -f /etc/logrotate.conf"
+```
+
+### Interactive Client
+
+### Starting the Server
 
 ### Starting the Server
 
