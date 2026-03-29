@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"blue-file-transfer/internal/auth"
@@ -33,6 +34,26 @@ func main() {
 		fmt.Printf("bft version %s\n", version)
 	case "benchmark", "bench":
 		runBenchmark(args)
+	case "ls":
+		runOneShot(args, "ls")
+	case "download", "dl":
+		runOneShot(args, "download")
+	case "upload", "ul":
+		runOneShot(args, "upload")
+	case "rm":
+		runOneShot(args, "rm")
+	case "mkdir":
+		runOneShot(args, "mkdir")
+	case "cp":
+		runOneShot(args, "cp")
+	case "mv":
+		runOneShot(args, "mv")
+	case "exec", "!":
+		runOneShot(args, "exec")
+	case "pwd":
+		runOneShot(args, "pwd")
+	case "info":
+		runOneShot(args, "info")
 	case "useradd":
 		runUserAdd(args)
 	case "userdel":
@@ -55,11 +76,24 @@ Usage:
   bft server [options]       Start as server
   bft client [options]       Start interactive client
   bft scan [options]         Scan for Bluetooth devices
-  bft useradd [options]      Add a user to the users file
-  bft userdel [options]      Remove a user from the users file
-  bft userlist [options]     List users in the users file
   bft version                Show version
-  bft help                   Show this help
+
+One-shot commands (connect, run, exit):
+  bft ls    --server <addr> [--path <dir>] [conn-options]
+  bft download --server <addr> --path <remote> [--local <dir>] [conn-options]
+  bft upload   --server <addr> --path <local> [--remote <path>] [conn-options]
+  bft rm    --server <addr> --path <target> [conn-options]
+  bft mkdir --server <addr> --path <dir> [conn-options]
+  bft cp    --server <addr> --src <s> --dst <d> [conn-options]
+  bft mv    --server <addr> --src <s> --dst <d> [conn-options]
+  bft info  --server <addr> --path <target> [conn-options]
+  bft pwd   --server <addr> [conn-options]
+  bft exec  --server <addr> --cmd <command> [conn-options]
+
+User management:
+  bft useradd --users-file <path> --user <name> --pass <password>
+  bft userdel --users-file <path> --user <name>
+  bft userlist --users-file <path>
 
 Server options:
   --adapter <hci>      Bluetooth adapter (default: hci0)
@@ -69,21 +103,14 @@ Server options:
   --no-exec            Disable remote command execution (enabled by default)
   --users-file <path>  Users file for authentication (default: none, no auth)
 
-Client options:
+Connection options (client, one-shot, benchmark):
   --adapter <hci>      Bluetooth adapter (default: hci0)
-  --no-compress        Disable compression (enabled by default)
+  --server <addr>      Server Bluetooth address
+  --channel <n>        Channel number (default: 1)
   --rfcomm             Use RFCOMM transport (default: L2CAP)
   --user <username>    Username for authentication
   --pass <password>    Password for authentication
-
-Scan options:
-  --adapter <hci>      Bluetooth adapter (default: hci0)
-  --timeout <sec>      Scan timeout in seconds (default: 10)
-
-User management:
-  bft useradd --users-file <path> --user <name> --pass <password>
-  bft userdel --users-file <path> --user <name>
-  bft userlist --users-file <path>`)
+  --no-compress        Disable compression (enabled by default)`)
 }
 
 func parseFlags(args []string) map[string]string {
@@ -242,6 +269,190 @@ func runScan(args []string) {
 	fmt.Printf("Found %d device(s):\n", len(devices))
 	for _, d := range devices {
 		fmt.Printf("  %s  %s\n", d.Address, d.Name)
+	}
+}
+
+func connectOneShot(flags map[string]string) *client.Client {
+	serverAddr, ok := flags["server"]
+	if !ok || serverAddr == "" {
+		fmt.Fprintln(os.Stderr, "Error: --server <bt-address> is required")
+		os.Exit(1)
+	}
+
+	adapter := "hci0"
+	if v, ok := flags["adapter"]; ok {
+		adapter = v
+	}
+	channel := uint8(1)
+	if v, ok := flags["channel"]; ok {
+		ch, _ := strconv.Atoi(v)
+		if ch > 0 && ch < 31 {
+			channel = uint8(ch)
+		}
+	}
+	compress := true
+	if _, ok := flags["no-compress"]; ok {
+		compress = false
+	}
+	username := ""
+	if v, ok := flags["user"]; ok {
+		username = v
+	}
+	password := ""
+	if v, ok := flags["pass"]; ok {
+		password = v
+	}
+
+	transport, _ := getTransport(flags)
+	c := client.New(transport, adapter)
+	c.Compress = compress
+	c.Username = username
+	c.Password = password
+
+	if err := c.Connect(serverAddr, channel); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	return c
+}
+
+func runOneShot(args []string, command string) {
+	flags := parseFlags(args)
+	c := connectOneShot(flags)
+	defer c.Disconnect()
+
+	switch command {
+	case "ls":
+		path := ""
+		if v, ok := flags["path"]; ok {
+			path = v
+		}
+		listing, err := c.ListDir(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, e := range listing.Entries {
+			typeStr := "FILE"
+			if e.EntryType == 1 {
+				typeStr = "DIR "
+			}
+			fmt.Printf("  %s %8d  %s\n", typeStr, e.Size, e.Name)
+		}
+
+	case "pwd":
+		path, err := c.Pwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(path)
+
+	case "info":
+		target := flags["path"]
+		if target == "" {
+			fmt.Fprintln(os.Stderr, "Error: --path is required")
+			os.Exit(1)
+		}
+		info, err := c.GetInfo(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Name: %s\nSize: %d\nType: %d\nMode: %o\n", info.Name, info.Size, info.EntryType, info.Mode)
+
+	case "download":
+		remotePath := flags["path"]
+		if remotePath == "" {
+			fmt.Fprintln(os.Stderr, "Error: --path is required")
+			os.Exit(1)
+		}
+		localDir := "."
+		if v, ok := flags["local"]; ok {
+			localDir = v
+		}
+		result, err := c.Download(remotePath, localDir, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(result)
+
+	case "upload":
+		localPath := flags["path"]
+		if localPath == "" {
+			fmt.Fprintln(os.Stderr, "Error: --path is required")
+			os.Exit(1)
+		}
+		remotePath := ""
+		if v, ok := flags["remote"]; ok {
+			remotePath = v
+		}
+		if remotePath == "" {
+			remotePath = filepath.Base(localPath)
+		}
+		if err := c.Upload(localPath, remotePath, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("OK")
+
+	case "rm":
+		target := flags["path"]
+		if target == "" {
+			fmt.Fprintln(os.Stderr, "Error: --path is required")
+			os.Exit(1)
+		}
+		if err := c.Delete(target); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "mkdir":
+		target := flags["path"]
+		if target == "" {
+			fmt.Fprintln(os.Stderr, "Error: --path is required")
+			os.Exit(1)
+		}
+		if err := c.Mkdir(target); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "cp":
+		src, dst := flags["src"], flags["dst"]
+		if src == "" || dst == "" {
+			fmt.Fprintln(os.Stderr, "Error: --src and --dst are required")
+			os.Exit(1)
+		}
+		if err := c.Copy(src, dst); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "mv":
+		src, dst := flags["src"], flags["dst"]
+		if src == "" || dst == "" {
+			fmt.Fprintln(os.Stderr, "Error: --src and --dst are required")
+			os.Exit(1)
+		}
+		if err := c.Move(src, dst); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "exec":
+		cmdStr := flags["cmd"]
+		if cmdStr == "" {
+			fmt.Fprintln(os.Stderr, "Error: --cmd is required")
+			os.Exit(1)
+		}
+		exitCode, err := c.Exec(cmdStr, os.Stdout, os.Stderr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(int(exitCode))
 	}
 }
 
