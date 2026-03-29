@@ -34,6 +34,9 @@ jobs:
           - os: linux
             arch: amd64
             ext: ""
+          - os: linux
+            arch: arm64
+            ext: ""
           - os: windows
             arch: amd64
             ext: ".exe"
@@ -88,4 +91,5 @@ jobs:
         with:
           files: |
             bft-linux-amd64/bft-linux-amd64.tar.gz
+            bft-linux-arm64/bft-linux-arm64.tar.gz
             bft-windows-amd64/bft-windows-amd64.tar.gz
