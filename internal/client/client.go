@@ -18,6 +18,8 @@ type Client struct {
 	conn      bt.Conn
 	adapter   string
 	Compress  bool
+	Username  string
+	Password  string
 }
 
 // New creates a new Client.
@@ -28,13 +30,29 @@ func New(transport bt.Transport, adapter string) *Client {
 	}
 }
 
-// Connect connects to a remote server.
+// Connect connects to a remote server. If Username is set, sends authentication.
 func (c *Client) Connect(remoteAddr string, channel uint8) error {
 	conn, err := c.transport.Connect(c.adapter, remoteAddr, channel)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	c.conn = conn
+
+	// Send auth if credentials are set
+	if c.Username != "" {
+		payload := protocol.EncodeTwoStrings(c.Username, c.Password)
+		if err := protocol.WriteMessage(c.conn, protocol.MsgAuth, protocol.FlagNone, payload); err != nil {
+			c.conn.Close()
+			c.conn = nil
+			return fmt.Errorf("send auth: %w", err)
+		}
+		if err := c.expectOK(); err != nil {
+			c.conn.Close()
+			c.conn = nil
+			return fmt.Errorf("auth: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -362,6 +380,15 @@ func (c *Client) Exec(command string, stdoutWriter, stderrWriter io.Writer) (int
 			return -1, fmt.Errorf("unexpected message type 0x%02X during exec", msg.Header.Type)
 		}
 	}
+}
+
+// Passwd changes the current user's password on the server.
+func (c *Client) Passwd(oldPassword, newPassword string) error {
+	payload := protocol.EncodeTwoStrings(oldPassword, newPassword)
+	if err := protocol.WriteMessage(c.conn, protocol.MsgPasswd, protocol.FlagNone, payload); err != nil {
+		return err
+	}
+	return c.expectOK()
 }
 
 // Scan scans for nearby Bluetooth devices.

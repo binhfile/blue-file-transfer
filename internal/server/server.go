@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 
+	"blue-file-transfer/internal/auth"
 	"blue-file-transfer/internal/bt"
 	"blue-file-transfer/internal/fsutil"
 	"blue-file-transfer/internal/protocol"
@@ -23,6 +24,7 @@ type Server struct {
 	adapter   string
 	channel   uint8
 	AllowExec bool
+	Users     *auth.UserStore
 	logger    *log.Logger
 }
 
@@ -79,6 +81,17 @@ func (s *Server) ServeConn(conn bt.Conn) {
 func (s *Server) handleConnection(conn bt.Conn) {
 	defer conn.Close()
 
+	// Authentication handshake (if users are configured)
+	var authUser string
+	if s.Users != nil && s.Users.HasUsers() {
+		user, ok := s.authenticate(conn)
+		if !ok {
+			return
+		}
+		authUser = user
+		s.logger.Printf("Authenticated: %s", authUser)
+	}
+
 	currentDir := s.rootDir
 
 	for {
@@ -126,6 +139,9 @@ func (s *Server) handleConnection(conn bt.Conn) {
 
 		case protocol.MsgExec:
 			s.handleExec(conn, currentDir, msg.Payload)
+
+		case protocol.MsgPasswd:
+			s.handlePasswd(conn, authUser, msg.Payload)
 
 		default:
 			s.sendError(conn, protocol.ErrCodeInvalidRequest, fmt.Sprintf("unknown message type: 0x%02X", msg.Header.Type))
@@ -445,6 +461,73 @@ func (s *Server) handleUpload(conn io.ReadWriter, currentDir string, payload []b
 		}
 	}
 
+	s.sendOK(conn)
+}
+
+// authenticate performs the auth handshake. Returns username and success.
+func (s *Server) authenticate(conn bt.Conn) (string, bool) {
+	msg, err := protocol.ReadMessage(conn)
+	if err != nil {
+		s.logger.Printf("Auth read error: %v", err)
+		return "", false
+	}
+
+	if msg.Header.Type != protocol.MsgAuth {
+		s.sendError(conn, protocol.ErrCodeAuthRequired, "authentication required")
+		return "", false
+	}
+
+	username, off, err := protocol.DecodeString(msg.Payload, 0)
+	if err != nil {
+		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid auth payload")
+		return "", false
+	}
+	password, _, err := protocol.DecodeString(msg.Payload, off)
+	if err != nil {
+		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid auth payload")
+		return "", false
+	}
+
+	if !s.Users.Authenticate(username, password) {
+		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid username or password")
+		s.logger.Printf("Auth failed: %s", username)
+		return "", false
+	}
+
+	s.sendOK(conn)
+	return username, true
+}
+
+func (s *Server) handlePasswd(conn io.Writer, authUser string, payload []byte) {
+	if s.Users == nil || !s.Users.HasUsers() {
+		s.sendError(conn, protocol.ErrCodeInvalidRequest, "no user store configured")
+		return
+	}
+
+	// Payload: old_password + new_password
+	oldPass, off, err := protocol.DecodeString(payload, 0)
+	if err != nil {
+		s.sendError(conn, protocol.ErrCodeInvalidRequest, "invalid passwd payload")
+		return
+	}
+	newPass, _, err := protocol.DecodeString(payload, off)
+	if err != nil {
+		s.sendError(conn, protocol.ErrCodeInvalidRequest, "invalid passwd payload")
+		return
+	}
+
+	// Verify old password
+	if !s.Users.Authenticate(authUser, oldPass) {
+		s.sendError(conn, protocol.ErrCodeAuthFailed, "incorrect current password")
+		return
+	}
+
+	if err := s.Users.ChangePassword(authUser, newPass); err != nil {
+		s.sendError(conn, protocol.ErrCodePermission, err.Error())
+		return
+	}
+
+	s.logger.Printf("Password changed: %s", authUser)
 	s.sendOK(conn)
 }
 

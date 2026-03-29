@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 
+	"blue-file-transfer/internal/auth"
 	"blue-file-transfer/internal/bt"
 	"blue-file-transfer/internal/client"
 	"blue-file-transfer/internal/server"
@@ -32,6 +33,12 @@ func main() {
 		fmt.Printf("bft version %s\n", version)
 	case "benchmark", "bench":
 		runBenchmark(args)
+	case "useradd":
+		runUserAdd(args)
+	case "userdel":
+		runUserDel(args)
+	case "userlist":
+		runUserList(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -45,27 +52,38 @@ func printUsage() {
 	fmt.Println(`Blue File Transfer (bft) - Bluetooth file transfer tool
 
 Usage:
-  bft server [options]    Start as server
-  bft client [options]    Start interactive client
-  bft scan [options]      Scan for Bluetooth devices
-  bft version             Show version
-  bft help                Show this help
+  bft server [options]       Start as server
+  bft client [options]       Start interactive client
+  bft scan [options]         Scan for Bluetooth devices
+  bft useradd [options]      Add a user to the users file
+  bft userdel [options]      Remove a user from the users file
+  bft userlist [options]     List users in the users file
+  bft version                Show version
+  bft help                   Show this help
 
 Server options:
-  --adapter <hci>    Bluetooth adapter (default: hci0)
-  --dir <path>       Root directory to serve (default: current dir)
-  --channel <n>      RFCOMM channel 1-30 (default: 1)
-  --rfcomm           Use RFCOMM transport (default: L2CAP)
-  --no-exec          Disable remote command execution (enabled by default)
+  --adapter <hci>      Bluetooth adapter (default: hci0)
+  --dir <path>         Root directory to serve (default: current dir)
+  --channel <n>        RFCOMM channel 1-30 (default: 1)
+  --rfcomm             Use RFCOMM transport (default: L2CAP)
+  --no-exec            Disable remote command execution (enabled by default)
+  --users-file <path>  Users file for authentication (default: none, no auth)
 
 Client options:
-  --adapter <hci>    Bluetooth adapter (default: hci0)
-  --no-compress      Disable compression (enabled by default)
-  --rfcomm           Use RFCOMM transport (default: L2CAP)
+  --adapter <hci>      Bluetooth adapter (default: hci0)
+  --no-compress        Disable compression (enabled by default)
+  --rfcomm             Use RFCOMM transport (default: L2CAP)
+  --user <username>    Username for authentication
+  --pass <password>    Password for authentication
 
 Scan options:
-  --adapter <hci>    Bluetooth adapter (default: hci0)
-  --timeout <sec>    Scan timeout in seconds (default: 10)`)
+  --adapter <hci>      Bluetooth adapter (default: hci0)
+  --timeout <sec>      Scan timeout in seconds (default: 10)
+
+User management:
+  bft useradd --users-file <path> --user <name> --pass <password>
+  bft userdel --users-file <path> --user <name>
+  bft userlist --users-file <path>`)
 }
 
 func parseFlags(args []string) map[string]string {
@@ -118,6 +136,11 @@ func runServer(args []string) {
 		allowExec = false
 	}
 
+	usersFile := ""
+	if v, ok := flags["users-file"]; ok {
+		usersFile = v
+	}
+
 	transport, proto := getTransport(flags)
 	srv, err := server.New(transport, dir, adapter, channel)
 	if err != nil {
@@ -126,11 +149,24 @@ func runServer(args []string) {
 	}
 	srv.AllowExec = allowExec
 
+	if usersFile != "" {
+		users, err := auth.NewUserStore(usersFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading users: %v\n", err)
+			os.Exit(1)
+		}
+		srv.Users = users
+	}
+
+	authStr := ""
+	if srv.Users != nil && srv.Users.HasUsers() {
+		authStr = fmt.Sprintf(", auth: %d user(s)", len(srv.Users.ListUsers()))
+	}
 	execStr := ""
 	if allowExec {
 		execStr = ", exec: ENABLED"
 	}
-	fmt.Printf("Starting BFT server [%s] on %s channel %d, serving: %s%s\n", proto, adapter, channel, dir, execStr)
+	fmt.Printf("Starting BFT server [%s] on %s channel %d, serving: %s%s%s\n", proto, adapter, channel, dir, authStr, execStr)
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -150,9 +186,20 @@ func runClient(args []string) {
 		compress = false
 	}
 
+	username := ""
+	if v, ok := flags["user"]; ok {
+		username = v
+	}
+	password := ""
+	if v, ok := flags["pass"]; ok {
+		password = v
+	}
+
 	transport, proto := getTransport(flags)
 	c := client.New(transport, adapter)
 	c.Compress = compress
+	c.Username = username
+	c.Password = password
 
 	fmt.Printf("Transport: %s\n", proto)
 	if err := client.RunInteractiveCLI(c); err != nil {
@@ -195,5 +242,90 @@ func runScan(args []string) {
 	fmt.Printf("Found %d device(s):\n", len(devices))
 	for _, d := range devices {
 		fmt.Printf("  %s  %s\n", d.Address, d.Name)
+	}
+}
+
+func runUserAdd(args []string) {
+	flags := parseFlags(args)
+
+	usersFile, ok := flags["users-file"]
+	if !ok || usersFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --users-file is required")
+		os.Exit(1)
+	}
+	username, ok := flags["user"]
+	if !ok || username == "" {
+		fmt.Fprintln(os.Stderr, "Error: --user is required")
+		os.Exit(1)
+	}
+	password, ok := flags["pass"]
+	if !ok || password == "" {
+		fmt.Fprintln(os.Stderr, "Error: --pass is required")
+		os.Exit(1)
+	}
+
+	store, err := auth.NewUserStore(usersFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := store.AddUser(username, password); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("User '%s' added to %s\n", username, usersFile)
+}
+
+func runUserDel(args []string) {
+	flags := parseFlags(args)
+
+	usersFile, ok := flags["users-file"]
+	if !ok || usersFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --users-file is required")
+		os.Exit(1)
+	}
+	username, ok := flags["user"]
+	if !ok || username == "" {
+		fmt.Fprintln(os.Stderr, "Error: --user is required")
+		os.Exit(1)
+	}
+
+	store, err := auth.NewUserStore(usersFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := store.RemoveUser(username); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("User '%s' removed from %s\n", username, usersFile)
+}
+
+func runUserList(args []string) {
+	flags := parseFlags(args)
+
+	usersFile, ok := flags["users-file"]
+	if !ok || usersFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --users-file is required")
+		os.Exit(1)
+	}
+
+	store, err := auth.NewUserStore(usersFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	users := store.ListUsers()
+	if len(users) == 0 {
+		fmt.Println("No users configured.")
+		return
+	}
+	fmt.Printf("Users in %s:\n", usersFile)
+	for _, u := range users {
+		fmt.Printf("  %s\n", u)
 	}
 }

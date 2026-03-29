@@ -19,6 +19,8 @@ const (
 	MsgChDir    uint8 = 0x09
 	MsgPwd      uint8 = 0x0A
 	MsgExec     uint8 = 0x0B // Remote command execution
+	MsgAuth     uint8 = 0x0C // Authentication (username + password)
+	MsgPasswd   uint8 = 0x0D // Change password
 
 	// Response types (server -> client)
 	MsgOK          uint8 = 0x80
@@ -117,6 +119,8 @@ const (
 	ErrCodeInvalidRequest uint16 = 7
 	ErrCodeBusy           uint16 = 8
 	ErrCodeExecDisabled   uint16 = 9
+	ErrCodeAuthRequired   uint16 = 10
+	ErrCodeAuthFailed     uint16 = 11
 )
 
 // ExecOutput stream type flags

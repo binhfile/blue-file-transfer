@@ -54,7 +54,9 @@ func RunInteractiveCLI(c *Client) error {
 			fmt.Println("Goodbye!")
 			return nil
 		case "connect":
-			handleConnect(c, cmdArgs)
+			handleConnect(c, cmdArgs, rl)
+		case "passwd":
+			handlePasswd(c, rl)
 		case "disconnect":
 			handleDisconnect(c)
 		case "scan":
@@ -107,8 +109,9 @@ func printHelp() {
   cp <src> <dst>               Copy on server
   mv <src> <dst>               Move/rename on server
   compress [on|off]             Toggle or set compression
-  exec <command>               Execute command on server (requires --allow-exec)
+  exec <command>               Execute command on server
   ! <command>                  Shortcut for exec
+  passwd                       Change password on server
   help                         Show this help
   exit                         Exit client`)
 }
@@ -121,9 +124,9 @@ func requireConnected(c *Client) bool {
 	return true
 }
 
-func handleConnect(c *Client, args []string) {
+func handleConnect(c *Client, args []string, rl *readline) {
 	if len(args) < 1 {
-		fmt.Println("Usage: connect <bt-address> [channel]")
+		fmt.Println("Usage: connect <bt-address> [channel] [username]")
 		return
 	}
 	addr := args[0]
@@ -136,12 +139,107 @@ func handleConnect(c *Client, args []string) {
 		}
 	}
 
+	// Username from args or prompt
+	if len(args) > 2 {
+		c.Username = args[2]
+	} else if c.Username == "" {
+		// Prompt for username (empty = no auth)
+		user, ok := rl.readLine("Username (empty=no auth): ")
+		if !ok {
+			return
+		}
+		c.Username = strings.TrimSpace(user)
+	}
+
+	// Prompt for password if username is set
+	if c.Username != "" && c.Password == "" {
+		pass, ok := readPassword("Password: ")
+		if !ok {
+			return
+		}
+		c.Password = pass
+	}
+
 	fmt.Printf("Connecting to %s channel %d...\n", addr, channel)
 	if err := c.Connect(addr, channel); err != nil {
 		fmt.Printf("Error: %v\n", err)
+		c.Password = "" // Clear password on failure
 		return
 	}
 	fmt.Println("Connected!")
+}
+
+func handlePasswd(c *Client, rl *readline) {
+	if !requireConnected(c) {
+		return
+	}
+
+	oldPass, ok := readPassword("Current password: ")
+	if !ok {
+		return
+	}
+	newPass, ok := readPassword("New password: ")
+	if !ok {
+		return
+	}
+	confirmPass, ok := readPassword("Confirm new password: ")
+	if !ok {
+		return
+	}
+
+	if newPass != confirmPass {
+		fmt.Println("Error: passwords do not match")
+		return
+	}
+
+	if err := c.Passwd(oldPass, newPass); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	fmt.Println("Password changed successfully.")
+	c.Password = newPass
+}
+
+// readPassword reads a password with echo disabled.
+func readPassword(prompt string) (string, bool) {
+	fmt.Print(prompt)
+
+	raw, err := enableRawMode()
+	if err != nil {
+		// Fallback: read with echo
+		var pass string
+		fmt.Scanln(&pass)
+		return pass, true
+	}
+	defer func() {
+		disableRawMode(raw)
+		fmt.Println()
+	}()
+
+	var buf []byte
+	for {
+		var b [1]byte
+		n, err := os.Stdin.Read(b[:])
+		if err != nil || n == 0 {
+			return "", false
+		}
+		switch b[0] {
+		case 10, 13: // Enter
+			return string(buf), true
+		case 127, 8: // Backspace
+			if len(buf) > 0 {
+				buf = buf[:len(buf)-1]
+				fmt.Print("\b \b")
+			}
+		case 3: // Ctrl+C
+			return "", false
+		default:
+			if b[0] >= 32 {
+				buf = append(buf, b[0])
+				fmt.Print("*")
+			}
+		}
+	}
 }
 
 func handleDisconnect(c *Client) {
