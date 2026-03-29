@@ -7,6 +7,7 @@
 - [Installation - Windows](#installation---windows)
 - [Building from Source](#building-from-source)
 - [Hardware Setup](#hardware-setup)
+- [Authentication & Encryption](#authentication--encryption)
 - [Usage](#usage)
 - [Benchmark](#benchmark)
 - [Troubleshooting](#troubleshooting)
@@ -272,6 +273,102 @@ sudo hciconfig hci0 piscan
 
 ---
 
+## Authentication & Encryption
+
+BFT supports multi-user authentication with AES-256-GCM encrypted data transfer.
+
+### Setup Users
+
+```bash
+# Add users
+bft useradd --users-file users.json --user admin --pass mypassword
+bft useradd --users-file users.json --user guest --pass guest123
+
+# List users
+bft userlist --users-file users.json
+
+# Remove a user
+bft userdel --users-file users.json --user guest
+```
+
+The users file stores salted SHA-256 password hashes (file permissions: 0600):
+```json
+[
+  {
+    "username": "admin",
+    "pass_hash": "26dfba01...",
+    "salt": "dde87434..."
+  }
+]
+```
+
+### Server with Authentication
+
+```bash
+# Auth enabled — all connections require username/password
+# All data encrypted with AES-256-GCM after login
+sudo bft server --dir /shared --users-file users.json
+
+# Without --users-file — no auth, no encryption (backward compatible)
+sudo bft server --dir /shared
+```
+
+### Client Login
+
+```bash
+# Credentials via flags
+sudo bft client --user admin --pass mypassword
+
+# Or interactive prompt (password masked with *)
+sudo bft client
+bft> connect 00:1A:7D:DA:71:22
+Username (empty=no auth): admin
+Password: ********
+Connected!
+```
+
+### Change Password
+
+```bash
+bft> passwd
+Current password: ********
+New password: ********
+Confirm new password: ********
+Password changed successfully.
+```
+
+### Encryption Details
+
+When authentication is enabled, all data after login is encrypted end-to-end:
+
+```
+Client                              Server
+  |                                   |
+  |-- MsgAuth(user, pass) ---------> |  plaintext (one-time)
+  |<-- MsgOK ------------------------|
+  |                                   |
+  |<-- server_nonce (32 bytes) ------|  key exchange
+  |-- client_nonce (32 bytes) ------>|
+  |                                   |
+  |   key = HKDF-SHA256(password,     |
+  |         server_nonce || client_nonce)
+  |                                   |
+  |== AES-256-GCM encrypted ========|  all subsequent data
+  |-- [len][nonce][ciphertext+tag] ->|
+  |<- [len][nonce][ciphertext+tag] --|
+```
+
+| Property | Value |
+|----------|-------|
+| Cipher | AES-256-GCM |
+| Key derivation | HKDF-SHA256 |
+| Key length | 256 bits |
+| Nonce | 12 bytes (8-byte counter + 4 random) |
+| Auth tag | 16 bytes per frame |
+| Forward secrecy | Per-session (random nonces) |
+
+---
+
 ## Usage
 
 ### Starting the Server
@@ -287,19 +384,24 @@ bft server [options]
 | `--adapter` | `hci0` | Bluetooth adapter to use |
 | `--dir` | `.` (current dir) | Root directory to serve |
 | `--channel` | `1` | RFCOMM channel 1-30 (or L2CAP PSM mapping) |
-| `--l2cap` | off | Use L2CAP transport (Linux only, 3-4x faster) |
+| `--rfcomm` | (default: L2CAP) | Use RFCOMM transport instead of L2CAP |
+| `--users-file` | (none) | Users file for auth + encryption |
+| `--no-exec` | (exec ON) | Disable remote command execution |
 
 **Examples:**
 
 ```bash
-# Serve with RFCOMM (default, cross-platform)
+# Basic server (L2CAP, no auth)
 sudo bft server --dir /home/user/shared
 
-# Serve with L2CAP (Linux only, higher throughput)
-sudo bft server --l2cap --dir /home/user/shared --channel 1
+# Server with auth + encryption
+sudo bft server --dir /home/user/shared --users-file users.json
 
-# Serve specific directory on hci0, channel 5
-sudo bft server --adapter hci0 --dir /home/user/shared --channel 5
+# RFCOMM mode (cross-platform), specific channel
+sudo bft server --dir /home/user/shared --rfcomm --channel 5
+
+# Disable remote exec
+sudo bft server --dir /home/user/shared --no-exec
 ```
 
 The server will display:
@@ -321,22 +423,30 @@ bft client [options]
 |--------|---------|-------------|
 | `--adapter` | `hci0` | Bluetooth adapter to use |
 | `--no-compress` | (compression ON) | Disable DEFLATE compression |
-| `--l2cap` | off | Use L2CAP transport (Linux only, 3-4x faster) |
+| `--rfcomm` | (default: L2CAP) | Use RFCOMM transport instead of L2CAP |
+| `--user` | (none) | Username for authentication |
+| `--pass` | (none) | Password for authentication |
 
 **Examples:**
 
 ```bash
-# Default: RFCOMM + compression
+# Default: L2CAP + compression, no auth
 sudo bft client --adapter hci1
 
-# L2CAP mode (Linux only, higher throughput)
-sudo bft client --adapter hci1 --l2cap
+# With authentication (enables AES-256-GCM encryption)
+sudo bft client --user admin --pass mypassword
 
-# Disable compression (for already-compressed files like ZIP, JPEG)
-sudo bft client --adapter hci1 --no-compress
+# RFCOMM mode
+sudo bft client --rfcomm
+
+# Interactive auth prompt on connect
+sudo bft client
+bft> connect 00:1A:7D:DA:71:22
+Username (empty=no auth): admin
+Password: ********
 ```
 
-> **Important**: Both server and client must use the same transport (`--l2cap` or default RFCOMM). They cannot mix.
+> **Important**: Both server and client must use the same transport (L2CAP default or `--rfcomm`). They cannot mix.
 
 ### Client Commands
 
@@ -411,8 +521,25 @@ bft> upload /home/user/project myproject
 
 **Transfer progress:**
 ```
-  512.0 KB / 1.00 MB (50.0%) avg: 15.4 KB/s  cur: 15.6 KB/s
+  512.0 KB / 1.00 MB (50.0%) 125.0 Kbps
 ```
+
+#### Remote Command Execution
+
+```bash
+# Execute command on server (output streamed in real-time)
+bft> exec uname -a
+Linux server 5.10.216-tegra ... aarch64 GNU/Linux
+
+# Shortcut with !
+bft> ! df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/mmcblk0p1   54G   46G  5.3G  90% /
+
+bft> ! curl -o update.tar.gz https://example.com/update.tar.gz
+```
+
+Server must not have `--no-exec` flag. Exit code is shown if non-zero.
 
 #### File Management (on server)
 
