@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +12,7 @@ import (
 
 // RunInteractiveCLI starts the interactive command line interface.
 func RunInteractiveCLI(c *Client) error {
-	scanner := bufio.NewScanner(os.Stdin)
+	rl := newReadline()
 	fmt.Println("Blue File Transfer Client")
 	if c.Compress {
 		fmt.Println("Compression: ON")
@@ -22,17 +21,17 @@ func RunInteractiveCLI(c *Client) error {
 	fmt.Println()
 
 	for {
-		if c.IsConnected() {
-			fmt.Print("bft> ")
-		} else {
-			fmt.Print("bft (disconnected)> ")
+		prompt := "bft> "
+		if !c.IsConnected() {
+			prompt = "bft (disconnected)> "
 		}
 
-		if !scanner.Scan() {
+		input, ok := rl.readLine(prompt)
+		if !ok {
 			break
 		}
 
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(input)
 		if line == "" {
 			continue
 		}
@@ -89,7 +88,7 @@ func RunInteractiveCLI(c *Client) error {
 		}
 	}
 
-	return scanner.Err()
+	return nil
 }
 
 func printHelp() {
