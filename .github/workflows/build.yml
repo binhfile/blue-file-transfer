@@ -49,17 +49,18 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
-          go build -ldflags="-s -w" -o bft-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} ./cmd/bft/
+          go build -ldflags="-s -w" -o build/bft${{ matrix.ext }} ./cmd/bft/
 
       - name: Package tar.gz
         run: |
           DIST_DIR="bft-${{ matrix.os }}-${{ matrix.arch }}"
-          mkdir -p "$DIST_DIR"
-          cp bft-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} "$DIST_DIR/"
-          cp README.md "$DIST_DIR/"
+          mkdir -p "dist/${DIST_DIR}"
+          cp build/bft${{ matrix.ext }} "dist/${DIST_DIR}/"
+          cp README.md "dist/${DIST_DIR}/"
           if [ "${{ matrix.os }}" = "linux" ]; then
-            cp scripts/install-server.sh "$DIST_DIR/"
+            cp scripts/install-server.sh "dist/${DIST_DIR}/"
           fi
+          cd dist
           tar czf "${DIST_DIR}.tar.gz" "$DIST_DIR"
           echo "=== Package contents ==="
           tar tzf "${DIST_DIR}.tar.gz"
@@ -69,7 +70,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bft-${{ matrix.os }}-${{ matrix.arch }}
-          path: bft-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+          path: dist/bft-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
 
   release:
     name: Upload release assets
