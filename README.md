@@ -544,15 +544,15 @@ sudo bft benchmark \
 
 | Adapter | Throughput | Notes |
 |---------|-----------|-------|
-| CSR8510 A10 (clone) | ~15 KB/s (120 Kbps) | DM1 packets, ACL MTU=310 |
-| CSR8510 A10 (genuine) | ~90 KB/s (720 Kbps) | DH5 packets |
+| CSR8510 A10 | ~15 KB/s (120 Kbps) | DM1 packets, ACL MTU=310 |
+| BT 4.0 EDR adapter | ~90 KB/s (720 Kbps) | DH5 packets |
 | BT 2.1 EDR adapter | ~150-250 KB/s (1.2-2.0 Mbps) | 3-DH5 packets |
 
 **L2CAP transport (Linux only):**
 
 | Adapter | Throughput | Notes |
 |---------|-----------|-------|
-| CSR8510 A10 (clone) | ~45-60 KB/s (360-480 Kbps) | Lower overhead, larger MTU |
+| CSR8510 A10 | ~45-60 KB/s (360-480 Kbps) | Lower overhead, larger MTU |
 | BT 2.1 EDR adapter | ~200-260 KB/s (1.6-2.1 Mbps) | Near theoretical max |
 
 ### RFCOMM vs L2CAP
