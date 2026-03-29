@@ -55,13 +55,13 @@ Server options:
   --adapter <hci>    Bluetooth adapter (default: hci0)
   --dir <path>       Root directory to serve (default: current dir)
   --channel <n>      RFCOMM channel 1-30 (default: 1)
-  --l2cap            Use L2CAP transport (Linux only, higher throughput)
+  --rfcomm           Use RFCOMM transport (default: L2CAP)
   --no-exec          Disable remote command execution (enabled by default)
 
 Client options:
   --adapter <hci>    Bluetooth adapter (default: hci0)
   --no-compress      Disable compression (enabled by default)
-  --l2cap            Use L2CAP transport (Linux only, higher throughput)
+  --rfcomm           Use RFCOMM transport (default: L2CAP)
 
 Scan options:
   --adapter <hci>    Bluetooth adapter (default: hci0)
@@ -85,9 +85,9 @@ func parseFlags(args []string) map[string]string {
 }
 
 func getTransport(flags map[string]string) (bt.Transport, string) {
-	proto := "rfcomm"
-	if _, ok := flags["l2cap"]; ok {
-		proto = "l2cap"
+	proto := "l2cap"
+	if _, ok := flags["rfcomm"]; ok {
+		proto = "rfcomm"
 	}
 	return bt.NewTransportWithProtocol(proto), proto
 }
