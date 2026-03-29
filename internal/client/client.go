@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"blue-file-transfer/internal/bt"
+	bftcrypto "blue-file-transfer/internal/crypto"
 	"blue-file-transfer/internal/protocol"
 	"blue-file-transfer/internal/transfer"
 )
@@ -16,10 +17,12 @@ import (
 type Client struct {
 	transport bt.Transport
 	conn      bt.Conn
+	rw        io.ReadWriter // encrypted or plain conn
 	adapter   string
 	Compress  bool
 	Username  string
 	Password  string
+	Encrypted bool
 }
 
 // New creates a new Client.
@@ -30,13 +33,15 @@ func New(transport bt.Transport, adapter string) *Client {
 	}
 }
 
-// Connect connects to a remote server. If Username is set, sends authentication.
+// Connect connects to a remote server. If Username is set, sends authentication
+// and establishes AES-256-GCM encrypted channel.
 func (c *Client) Connect(remoteAddr string, channel uint8) error {
 	conn, err := c.transport.Connect(c.adapter, remoteAddr, channel)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	c.conn = conn
+	c.rw = conn // default: unencrypted
 
 	// Send auth if credentials are set
 	if c.Username != "" {
@@ -46,11 +51,21 @@ func (c *Client) Connect(remoteAddr string, channel uint8) error {
 			c.conn = nil
 			return fmt.Errorf("send auth: %w", err)
 		}
-		if err := c.expectOK(); err != nil {
+		if err := c.expectOKRaw(); err != nil {
 			c.conn.Close()
 			c.conn = nil
 			return fmt.Errorf("auth: %w", err)
 		}
+
+		// Establish encrypted channel using password as shared secret
+		encStream, err := bftcrypto.ClientHandshake(c.conn, c.Password)
+		if err != nil {
+			c.conn.Close()
+			c.conn = nil
+			return fmt.Errorf("encryption handshake: %w", err)
+		}
+		c.rw = encStream
+		c.Encrypted = true
 	}
 
 	return nil
@@ -59,6 +74,7 @@ func (c *Client) Connect(remoteAddr string, channel uint8) error {
 // ConnectWithConn uses an existing connection (for testing).
 func (c *Client) ConnectWithConn(conn bt.Conn) {
 	c.conn = conn
+	c.rw = conn
 }
 
 // Disconnect closes the connection.
@@ -78,11 +94,11 @@ func (c *Client) IsConnected() bool {
 
 // Pwd returns the current remote working directory.
 func (c *Client) Pwd() (string, error) {
-	if err := protocol.WriteMessage(c.conn, protocol.MsgPwd, protocol.FlagNone, nil); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgPwd, protocol.FlagNone, nil); err != nil {
 		return "", err
 	}
 
-	msg, err := protocol.ReadMessage(c.conn)
+	msg, err := protocol.ReadMessage(c.rw)
 	if err != nil {
 		return "", err
 	}
@@ -101,11 +117,11 @@ func (c *Client) Pwd() (string, error) {
 // ChDir changes the remote working directory.
 func (c *Client) ChDir(path string) error {
 	payload := protocol.EncodeString(path)
-	if err := protocol.WriteMessage(c.conn, protocol.MsgChDir, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgChDir, protocol.FlagNone, payload); err != nil {
 		return err
 	}
 
-	msg, err := protocol.ReadMessage(c.conn)
+	msg, err := protocol.ReadMessage(c.rw)
 	if err != nil {
 		return err
 	}
@@ -121,11 +137,11 @@ func (c *Client) ListDir(path string) (*protocol.DirListingPayload, error) {
 	if path != "" {
 		payload = protocol.EncodeString(path)
 	}
-	if err := protocol.WriteMessage(c.conn, protocol.MsgListDir, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgListDir, protocol.FlagNone, payload); err != nil {
 		return nil, err
 	}
 
-	msg, err := protocol.ReadMessage(c.conn)
+	msg, err := protocol.ReadMessage(c.rw)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +158,11 @@ func (c *Client) ListDir(path string) (*protocol.DirListingPayload, error) {
 // GetInfo gets info about a remote file/directory.
 func (c *Client) GetInfo(path string) (*protocol.FileInfoPayload, error) {
 	payload := protocol.EncodeString(path)
-	if err := protocol.WriteMessage(c.conn, protocol.MsgGetInfo, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgGetInfo, protocol.FlagNone, payload); err != nil {
 		return nil, err
 	}
 
-	msg, err := protocol.ReadMessage(c.conn)
+	msg, err := protocol.ReadMessage(c.rw)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +180,7 @@ func (c *Client) GetInfo(path string) (*protocol.FileInfoPayload, error) {
 // Delete removes a file or directory on the server.
 func (c *Client) Delete(path string) error {
 	payload := protocol.EncodeString(path)
-	if err := protocol.WriteMessage(c.conn, protocol.MsgDelete, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgDelete, protocol.FlagNone, payload); err != nil {
 		return err
 	}
 	return c.expectOK()
@@ -173,7 +189,7 @@ func (c *Client) Delete(path string) error {
 // Mkdir creates a directory on the server.
 func (c *Client) Mkdir(path string) error {
 	payload := protocol.EncodeString(path)
-	if err := protocol.WriteMessage(c.conn, protocol.MsgMkdir, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgMkdir, protocol.FlagNone, payload); err != nil {
 		return err
 	}
 	return c.expectOK()
@@ -182,7 +198,7 @@ func (c *Client) Mkdir(path string) error {
 // Copy copies a file/directory on the server.
 func (c *Client) Copy(src, dst string) error {
 	payload := protocol.EncodeTwoStrings(src, dst)
-	if err := protocol.WriteMessage(c.conn, protocol.MsgCopy, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgCopy, protocol.FlagNone, payload); err != nil {
 		return err
 	}
 	return c.expectOK()
@@ -191,7 +207,7 @@ func (c *Client) Copy(src, dst string) error {
 // Move moves/renames a file/directory on the server.
 func (c *Client) Move(src, dst string) error {
 	payload := protocol.EncodeTwoStrings(src, dst)
-	if err := protocol.WriteMessage(c.conn, protocol.MsgMove, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgMove, protocol.FlagNone, payload); err != nil {
 		return err
 	}
 	return c.expectOK()
@@ -204,12 +220,12 @@ func (c *Client) Download(remotePath, localDir string, progressFn transfer.Progr
 		Path:     remotePath,
 		Compress: c.Compress,
 	}
-	if err := protocol.WriteMessage(c.conn, protocol.MsgDownload, protocol.FlagNone, req.Encode()); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgDownload, protocol.FlagNone, req.Encode()); err != nil {
 		return "", err
 	}
 
 	// Read first response to determine if it's a file or directory
-	msg, err := protocol.ReadMessage(c.conn)
+	msg, err := protocol.ReadMessage(c.rw)
 	if err != nil {
 		return "", err
 	}
@@ -235,7 +251,7 @@ func (c *Client) Download(remotePath, localDir string, progressFn transfer.Progr
 			// ReceiveDir reads remaining entries (subdirs + files) until MsgOK.
 			// Paths from SendDir are relative to the source dir root,
 			// so we place them inside destDir.
-			if err := transfer.ReceiveDir(c.conn, destDir, progressFn); err != nil {
+			if err := transfer.ReceiveDir(c.rw, destDir, progressFn); err != nil {
 				return "", err
 			}
 			return destDir, nil
@@ -254,7 +270,7 @@ func (c *Client) Download(remotePath, localDir string, progressFn transfer.Progr
 		var bytesReceived int64
 
 		for {
-			chunkMsg, err := protocol.ReadMessage(c.conn)
+			chunkMsg, err := protocol.ReadMessage(c.rw)
 			if err != nil {
 				return "", err
 			}
@@ -314,7 +330,7 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 		Compress:  c.Compress,
 	}
 
-	if err := protocol.WriteMessage(c.conn, protocol.MsgUpload, protocol.FlagNone, req.Encode()); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgUpload, protocol.FlagNone, req.Encode()); err != nil {
 		return err
 	}
 
@@ -324,12 +340,12 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 	}
 
 	if isDir {
-		if err := transfer.SendDir(c.conn, localPath, transfer.DefaultChunkSize, c.Compress, progressFn); err != nil {
+		if err := transfer.SendDir(c.rw, localPath, transfer.DefaultChunkSize, c.Compress, progressFn); err != nil {
 			return err
 		}
-		protocol.WriteMessage(c.conn, protocol.MsgOK, protocol.FlagNone, nil)
+		protocol.WriteMessage(c.rw, protocol.MsgOK, protocol.FlagNone, nil)
 	} else {
-		if err := transfer.SendFile(c.conn, localPath, transfer.DefaultChunkSize, c.Compress, progressFn); err != nil {
+		if err := transfer.SendFile(c.rw, localPath, transfer.DefaultChunkSize, c.Compress, progressFn); err != nil {
 			return err
 		}
 	}
@@ -343,12 +359,12 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 // Returns the exit code.
 func (c *Client) Exec(command string, stdoutWriter, stderrWriter io.Writer) (int32, error) {
 	payload := protocol.EncodeString(command)
-	if err := protocol.WriteMessage(c.conn, protocol.MsgExec, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgExec, protocol.FlagNone, payload); err != nil {
 		return -1, err
 	}
 
 	for {
-		msg, err := protocol.ReadMessage(c.conn)
+		msg, err := protocol.ReadMessage(c.rw)
 		if err != nil {
 			return -1, fmt.Errorf("read exec response: %w", err)
 		}
@@ -385,7 +401,7 @@ func (c *Client) Exec(command string, stdoutWriter, stderrWriter io.Writer) (int
 // Passwd changes the current user's password on the server.
 func (c *Client) Passwd(oldPassword, newPassword string) error {
 	payload := protocol.EncodeTwoStrings(oldPassword, newPassword)
-	if err := protocol.WriteMessage(c.conn, protocol.MsgPasswd, protocol.FlagNone, payload); err != nil {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgPasswd, protocol.FlagNone, payload); err != nil {
 		return err
 	}
 	return c.expectOK()
@@ -396,8 +412,23 @@ func (c *Client) Scan(timeout int) ([]bt.Device, error) {
 	return c.transport.Scan(c.adapter, time.Duration(timeout)*time.Second)
 }
 
-func (c *Client) expectOK() error {
+// expectOKRaw reads from raw conn (before encryption is established).
+func (c *Client) expectOKRaw() error {
 	msg, err := protocol.ReadMessage(c.conn)
+	if err != nil {
+		return err
+	}
+	if msg.Header.Type == protocol.MsgError {
+		return decodeError(msg)
+	}
+	if msg.Header.Type != protocol.MsgOK {
+		return fmt.Errorf("expected OK, got 0x%02X", msg.Header.Type)
+	}
+	return nil
+}
+
+func (c *Client) expectOK() error {
+	msg, err := protocol.ReadMessage(c.rw)
 	if err != nil {
 		return err
 	}
@@ -418,7 +449,7 @@ func decodeError(msg *protocol.Message) error {
 	return fmt.Errorf("server error [%d]: %s", ep.Code, ep.Message)
 }
 
-// Conn returns the underlying connection for advanced use.
+// Conn returns the read/write stream (encrypted if auth is active).
 func (c *Client) Conn() io.ReadWriter {
-	return c.conn
+	return c.rw
 }

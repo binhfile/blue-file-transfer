@@ -12,6 +12,7 @@ import (
 
 	"blue-file-transfer/internal/auth"
 	"blue-file-transfer/internal/bt"
+	bftcrypto "blue-file-transfer/internal/crypto"
 	"blue-file-transfer/internal/fsutil"
 	"blue-file-transfer/internal/protocol"
 	"blue-file-transfer/internal/transfer"
@@ -83,19 +84,33 @@ func (s *Server) handleConnection(conn bt.Conn) {
 
 	// Authentication handshake (if users are configured)
 	var authUser string
+	var authPassword string
 	if s.Users != nil && s.Users.HasUsers() {
-		user, ok := s.authenticate(conn)
+		user, pass, ok := s.authenticate(conn)
 		if !ok {
 			return
 		}
 		authUser = user
+		authPassword = pass
 		s.logger.Printf("Authenticated: %s", authUser)
+	}
+
+	// Establish encrypted channel after auth (password is the shared secret)
+	var rw io.ReadWriter = conn
+	if authPassword != "" {
+		encStream, err := bftcrypto.ServerHandshake(conn, authPassword)
+		if err != nil {
+			s.logger.Printf("Encryption handshake failed: %v", err)
+			return
+		}
+		rw = encStream
+		s.logger.Printf("Encryption established (AES-256-GCM)")
 	}
 
 	currentDir := s.rootDir
 
 	for {
-		msg, err := protocol.ReadMessage(conn)
+		msg, err := protocol.ReadMessage(rw)
 		if err != nil {
 			if err != io.EOF {
 				s.logger.Printf("Read error: %v", err)
@@ -105,46 +120,46 @@ func (s *Server) handleConnection(conn bt.Conn) {
 
 		switch msg.Header.Type {
 		case protocol.MsgPwd:
-			s.handlePwd(conn, currentDir)
+			s.handlePwd(rw, currentDir)
 
 		case protocol.MsgChDir:
-			newDir, err := s.handleChDir(conn, currentDir, msg.Payload)
+			newDir, err := s.handleChDir(rw, currentDir, msg.Payload)
 			if err == nil {
 				currentDir = newDir
 			}
 
 		case protocol.MsgListDir:
-			s.handleListDir(conn, currentDir, msg.Payload)
+			s.handleListDir(rw, currentDir, msg.Payload)
 
 		case protocol.MsgGetInfo:
-			s.handleGetInfo(conn, currentDir, msg.Payload)
+			s.handleGetInfo(rw, currentDir, msg.Payload)
 
 		case protocol.MsgDelete:
-			s.handleDelete(conn, currentDir, msg.Payload)
+			s.handleDelete(rw, currentDir, msg.Payload)
 
 		case protocol.MsgMkdir:
-			s.handleMkdir(conn, currentDir, msg.Payload)
+			s.handleMkdir(rw, currentDir, msg.Payload)
 
 		case protocol.MsgCopy:
-			s.handleCopy(conn, currentDir, msg.Payload)
+			s.handleCopy(rw, currentDir, msg.Payload)
 
 		case protocol.MsgMove:
-			s.handleMove(conn, currentDir, msg.Payload)
+			s.handleMove(rw, currentDir, msg.Payload)
 
 		case protocol.MsgDownload:
-			s.handleDownload(conn, currentDir, msg.Payload)
+			s.handleDownload(rw, currentDir, msg.Payload)
 
 		case protocol.MsgUpload:
-			s.handleUpload(conn, currentDir, msg.Payload)
+			s.handleUpload(rw, currentDir, msg.Payload)
 
 		case protocol.MsgExec:
-			s.handleExec(conn, currentDir, msg.Payload)
+			s.handleExec(rw, currentDir, msg.Payload)
 
 		case protocol.MsgPasswd:
-			s.handlePasswd(conn, authUser, msg.Payload)
+			s.handlePasswd(rw, authUser, msg.Payload)
 
 		default:
-			s.sendError(conn, protocol.ErrCodeInvalidRequest, fmt.Sprintf("unknown message type: 0x%02X", msg.Header.Type))
+			s.sendError(rw, protocol.ErrCodeInvalidRequest, fmt.Sprintf("unknown message type: 0x%02X", msg.Header.Type))
 		}
 	}
 }
@@ -464,38 +479,38 @@ func (s *Server) handleUpload(conn io.ReadWriter, currentDir string, payload []b
 	s.sendOK(conn)
 }
 
-// authenticate performs the auth handshake. Returns username and success.
-func (s *Server) authenticate(conn bt.Conn) (string, bool) {
+// authenticate performs the auth handshake. Returns username, password, and success.
+func (s *Server) authenticate(conn bt.Conn) (string, string, bool) {
 	msg, err := protocol.ReadMessage(conn)
 	if err != nil {
 		s.logger.Printf("Auth read error: %v", err)
-		return "", false
+		return "", "", false
 	}
 
 	if msg.Header.Type != protocol.MsgAuth {
 		s.sendError(conn, protocol.ErrCodeAuthRequired, "authentication required")
-		return "", false
+		return "", "", false
 	}
 
 	username, off, err := protocol.DecodeString(msg.Payload, 0)
 	if err != nil {
 		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid auth payload")
-		return "", false
+		return "", "", false
 	}
 	password, _, err := protocol.DecodeString(msg.Payload, off)
 	if err != nil {
 		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid auth payload")
-		return "", false
+		return "", "", false
 	}
 
 	if !s.Users.Authenticate(username, password) {
 		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid username or password")
 		s.logger.Printf("Auth failed: %s", username)
-		return "", false
+		return "", "", false
 	}
 
 	s.sendOK(conn)
-	return username, true
+	return username, password, true
 }
 
 func (s *Server) handlePasswd(conn io.Writer, authUser string, payload []byte) {
