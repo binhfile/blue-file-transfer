@@ -64,9 +64,20 @@ func runBenchmark(args []string) {
 		compress = false
 	}
 
+	username := ""
+	if v, ok := flags["user"]; ok {
+		username = v
+	}
+	password := ""
+	if v, ok := flags["pass"]; ok {
+		password = v
+	}
+
 	transport, proto := getTransport(flags)
 	c := client.New(transport, clientAdapter)
 	c.Compress = compress
+	c.Username = username
+	c.Password = password
 
 	fmt.Printf("Connecting to %s on %s channel %d [%s]...\n", serverAddr, clientAdapter, channel, proto)
 	if err := c.Connect(serverAddr, channel); err != nil {
