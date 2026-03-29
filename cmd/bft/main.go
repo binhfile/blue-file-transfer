@@ -56,7 +56,7 @@ Server options:
   --dir <path>       Root directory to serve (default: current dir)
   --channel <n>      RFCOMM channel 1-30 (default: 1)
   --l2cap            Use L2CAP transport (Linux only, higher throughput)
-  --allow-exec       Allow remote command execution from clients
+  --no-exec          Disable remote command execution (enabled by default)
 
 Client options:
   --adapter <hci>    Bluetooth adapter (default: hci0)
@@ -113,9 +113,9 @@ func runServer(args []string) {
 		}
 	}
 
-	allowExec := false
-	if _, ok := flags["allow-exec"]; ok {
-		allowExec = true
+	allowExec := true
+	if _, ok := flags["no-exec"]; ok {
+		allowExec = false
 	}
 
 	transport, proto := getTransport(flags)
