@@ -320,6 +320,50 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 	return c.expectOK()
 }
 
+// Exec executes a command on the remote server and streams output.
+// stdoutWriter receives stdout, stderrWriter receives stderr.
+// Returns the exit code.
+func (c *Client) Exec(command string, stdoutWriter, stderrWriter io.Writer) (int32, error) {
+	payload := protocol.EncodeString(command)
+	if err := protocol.WriteMessage(c.conn, protocol.MsgExec, protocol.FlagNone, payload); err != nil {
+		return -1, err
+	}
+
+	for {
+		msg, err := protocol.ReadMessage(c.conn)
+		if err != nil {
+			return -1, fmt.Errorf("read exec response: %w", err)
+		}
+
+		switch msg.Header.Type {
+		case protocol.MsgExecOutput:
+			out, err := protocol.DecodeExecOutputPayload(msg.Payload)
+			if err != nil {
+				return -1, err
+			}
+			switch out.Stream {
+			case protocol.ExecStdout:
+				stdoutWriter.Write(out.Data)
+			case protocol.ExecStderr:
+				stderrWriter.Write(out.Data)
+			}
+
+		case protocol.MsgExecExit:
+			exitPayload, err := protocol.DecodeExecExitPayload(msg.Payload)
+			if err != nil {
+				return -1, err
+			}
+			return exitPayload.ExitCode, nil
+
+		case protocol.MsgError:
+			return -1, decodeError(msg)
+
+		default:
+			return -1, fmt.Errorf("unexpected message type 0x%02X during exec", msg.Header.Type)
+		}
+	}
+}
+
 // Scan scans for nearby Bluetooth devices.
 func (c *Client) Scan(timeout int) ([]bt.Device, error) {
 	return c.transport.Scan(c.adapter, time.Duration(timeout)*time.Second)

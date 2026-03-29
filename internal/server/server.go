@@ -5,7 +5,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sync"
 
 	"blue-file-transfer/internal/bt"
 	"blue-file-transfer/internal/fsutil"
@@ -19,6 +22,7 @@ type Server struct {
 	rootDir   string
 	adapter   string
 	channel   uint8
+	AllowExec bool
 	logger    *log.Logger
 }
 
@@ -119,6 +123,9 @@ func (s *Server) handleConnection(conn bt.Conn) {
 
 		case protocol.MsgUpload:
 			s.handleUpload(conn, currentDir, msg.Payload)
+
+		case protocol.MsgExec:
+			s.handleExec(conn, currentDir, msg.Payload)
 
 		default:
 			s.sendError(conn, protocol.ErrCodeInvalidRequest, fmt.Sprintf("unknown message type: 0x%02X", msg.Header.Type))
@@ -439,6 +446,87 @@ func (s *Server) handleUpload(conn io.ReadWriter, currentDir string, payload []b
 	}
 
 	s.sendOK(conn)
+}
+
+func (s *Server) handleExec(conn io.Writer, currentDir string, payload []byte) {
+	if !s.AllowExec {
+		s.sendError(conn, protocol.ErrCodeExecDisabled, "remote command execution is disabled (server needs --allow-exec)")
+		return
+	}
+
+	cmdStr, _, err := protocol.DecodeString(payload, 0)
+	if err != nil || cmdStr == "" {
+		s.sendError(conn, protocol.ErrCodeInvalidRequest, "invalid command")
+		return
+	}
+
+	s.logger.Printf("Exec: %s (cwd: %s)", cmdStr, currentDir)
+
+	// Determine shell
+	shell := "/bin/sh"
+	shellArg := "-c"
+	if runtime.GOOS == "windows" {
+		shell = "cmd.exe"
+		shellArg = "/C"
+	}
+
+	cmd := exec.Command(shell, shellArg, cmdStr)
+	cmd.Dir = currentDir
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		s.sendError(conn, protocol.ErrCodePermission, fmt.Sprintf("stdout pipe: %v", err))
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		s.sendError(conn, protocol.ErrCodePermission, fmt.Sprintf("stderr pipe: %v", err))
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		s.sendError(conn, protocol.ErrCodePermission, fmt.Sprintf("start: %v", err))
+		return
+	}
+
+	// Stream stdout and stderr concurrently
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	streamPipe := func(pipe io.ReadCloser, streamType uint8) {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := pipe.Read(buf)
+			if n > 0 {
+				out := &protocol.ExecOutputPayload{
+					Stream: streamType,
+					Data:   buf[:n],
+				}
+				protocol.WriteMessage(conn, protocol.MsgExecOutput, protocol.FlagNone, out.Encode())
+			}
+			if err != nil {
+				break
+			}
+		}
+	}
+
+	go streamPipe(stdoutPipe, protocol.ExecStdout)
+	go streamPipe(stderrPipe, protocol.ExecStderr)
+
+	wg.Wait()
+
+	exitCode := int32(0)
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = int32(exitErr.ExitCode())
+		} else {
+			exitCode = -1
+		}
+	}
+
+	exitPayload := &protocol.ExecExitPayload{ExitCode: exitCode}
+	protocol.WriteMessage(conn, protocol.MsgExecExit, protocol.FlagNone, exitPayload.Encode())
 }
 
 // receiveFileToPath receives a file to a specific path.

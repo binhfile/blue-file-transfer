@@ -18,6 +18,7 @@ const (
 	MsgMove     uint8 = 0x08
 	MsgChDir    uint8 = 0x09
 	MsgPwd      uint8 = 0x0A
+	MsgExec     uint8 = 0x0B // Remote command execution
 
 	// Response types (server -> client)
 	MsgOK          uint8 = 0x80
@@ -26,6 +27,8 @@ const (
 	MsgFileInfo    uint8 = 0x83
 	MsgDataChunk   uint8 = 0x84
 	MsgTransferEnd uint8 = 0x85
+	MsgExecOutput  uint8 = 0x86 // Streaming command output
+	MsgExecExit    uint8 = 0x87 // Command exit code
 )
 
 // Flags
@@ -113,7 +116,59 @@ const (
 	ErrCodeChecksum       uint16 = 6
 	ErrCodeInvalidRequest uint16 = 7
 	ErrCodeBusy           uint16 = 8
+	ErrCodeExecDisabled   uint16 = 9
 )
+
+// ExecOutput stream type flags
+const (
+	ExecStdout uint8 = 0x01
+	ExecStderr uint8 = 0x02
+)
+
+// ExecOutputPayload represents a chunk of command output.
+// Wire: stream_type(1) + data(N)
+type ExecOutputPayload struct {
+	Stream uint8  // ExecStdout or ExecStderr
+	Data   []byte
+}
+
+func (e *ExecOutputPayload) Encode() []byte {
+	buf := make([]byte, 1+len(e.Data))
+	buf[0] = e.Stream
+	copy(buf[1:], e.Data)
+	return buf
+}
+
+func DecodeExecOutputPayload(data []byte) (*ExecOutputPayload, error) {
+	if len(data) < 1 {
+		return nil, fmt.Errorf("insufficient data for ExecOutputPayload")
+	}
+	return &ExecOutputPayload{
+		Stream: data[0],
+		Data:   data[1:],
+	}, nil
+}
+
+// ExecExitPayload represents a command exit code.
+// Wire: exit_code(4, int32)
+type ExecExitPayload struct {
+	ExitCode int32
+}
+
+func (e *ExecExitPayload) Encode() []byte {
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, uint32(e.ExitCode))
+	return buf
+}
+
+func DecodeExecExitPayload(data []byte) (*ExecExitPayload, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("insufficient data for ExecExitPayload")
+	}
+	return &ExecExitPayload{
+		ExitCode: int32(binary.LittleEndian.Uint32(data[0:4])),
+	}, nil
+}
 
 // FileEntryType constants
 const (

@@ -82,6 +82,8 @@ func RunInteractiveCLI(c *Client) error {
 			handleMv(c, cmdArgs)
 		case "compress":
 			handleCompress(c, cmdArgs)
+		case "exec", "!":
+			handleExec(c, line)
 		default:
 			fmt.Printf("Unknown command: %s (type 'help' for commands)\n", cmd)
 		}
@@ -106,6 +108,8 @@ func printHelp() {
   cp <src> <dst>               Copy on server
   mv <src> <dst>               Move/rename on server
   compress [on|off]             Toggle or set compression
+  exec <command>               Execute command on server (requires --allow-exec)
+  ! <command>                  Shortcut for exec
   help                         Show this help
   exit                         Exit client`)
 }
@@ -447,6 +451,38 @@ func handleMv(c *Client, args []string) {
 		return
 	}
 	fmt.Println("Moved.")
+}
+
+func handleExec(c *Client, line string) {
+	if !requireConnected(c) {
+		return
+	}
+
+	// Extract command: "exec <cmd>" or "! <cmd>"
+	var cmdStr string
+	if strings.HasPrefix(line, "!") {
+		cmdStr = strings.TrimSpace(line[1:])
+	} else {
+		// "exec <cmd>"
+		idx := strings.Index(line, " ")
+		if idx >= 0 {
+			cmdStr = strings.TrimSpace(line[idx+1:])
+		}
+	}
+
+	if cmdStr == "" {
+		fmt.Println("Usage: exec <command>  or  ! <command>")
+		return
+	}
+
+	exitCode, err := c.Exec(cmdStr, os.Stdout, os.Stderr)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	if exitCode != 0 {
+		fmt.Printf("Exit code: %d\n", exitCode)
+	}
 }
 
 func handleCompress(c *Client, args []string) {

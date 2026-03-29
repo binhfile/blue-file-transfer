@@ -56,6 +56,7 @@ Server options:
   --dir <path>       Root directory to serve (default: current dir)
   --channel <n>      RFCOMM channel 1-30 (default: 1)
   --l2cap            Use L2CAP transport (Linux only, higher throughput)
+  --allow-exec       Allow remote command execution from clients
 
 Client options:
   --adapter <hci>    Bluetooth adapter (default: hci0)
@@ -112,14 +113,24 @@ func runServer(args []string) {
 		}
 	}
 
+	allowExec := false
+	if _, ok := flags["allow-exec"]; ok {
+		allowExec = true
+	}
+
 	transport, proto := getTransport(flags)
 	srv, err := server.New(transport, dir, adapter, channel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	srv.AllowExec = allowExec
 
-	fmt.Printf("Starting BFT server [%s] on %s channel %d, serving: %s\n", proto, adapter, channel, dir)
+	execStr := ""
+	if allowExec {
+		execStr = ", exec: ENABLED"
+	}
+	fmt.Printf("Starting BFT server [%s] on %s channel %d, serving: %s%s\n", proto, adapter, channel, dir, execStr)
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
