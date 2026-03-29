@@ -10,7 +10,7 @@ import (
 	"blue-file-transfer/internal/server"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -55,10 +55,12 @@ Server options:
   --adapter <hci>    Bluetooth adapter (default: hci0)
   --dir <path>       Root directory to serve (default: current dir)
   --channel <n>      RFCOMM channel 1-30 (default: 1)
+  --l2cap            Use L2CAP transport (Linux only, higher throughput)
 
 Client options:
   --adapter <hci>    Bluetooth adapter (default: hci0)
   --no-compress      Disable compression (enabled by default)
+  --l2cap            Use L2CAP transport (Linux only, higher throughput)
 
 Scan options:
   --adapter <hci>    Bluetooth adapter (default: hci0)
@@ -79,6 +81,14 @@ func parseFlags(args []string) map[string]string {
 		}
 	}
 	return flags
+}
+
+func getTransport(flags map[string]string) (bt.Transport, string) {
+	proto := "rfcomm"
+	if _, ok := flags["l2cap"]; ok {
+		proto = "l2cap"
+	}
+	return bt.NewTransportWithProtocol(proto), proto
 }
 
 func runServer(args []string) {
@@ -102,14 +112,14 @@ func runServer(args []string) {
 		}
 	}
 
-	transport := bt.NewTransport()
+	transport, proto := getTransport(flags)
 	srv, err := server.New(transport, dir, adapter, channel)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Starting BFT server on %s channel %d, serving: %s\n", adapter, channel, dir)
+	fmt.Printf("Starting BFT server [%s] on %s channel %d, serving: %s\n", proto, adapter, channel, dir)
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -129,10 +139,11 @@ func runClient(args []string) {
 		compress = false
 	}
 
-	transport := bt.NewTransport()
+	transport, proto := getTransport(flags)
 	c := client.New(transport, adapter)
 	c.Compress = compress
 
+	fmt.Printf("Transport: %s\n", proto)
 	if err := client.RunInteractiveCLI(c); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

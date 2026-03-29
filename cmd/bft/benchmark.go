@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"blue-file-transfer/internal/bt"
 	"blue-file-transfer/internal/client"
 	"blue-file-transfer/internal/transfer"
 )
@@ -65,11 +64,11 @@ func runBenchmark(args []string) {
 		compress = false
 	}
 
-	transport := bt.NewTransport()
+	transport, proto := getTransport(flags)
 	c := client.New(transport, clientAdapter)
 	c.Compress = compress
 
-	fmt.Printf("Connecting to %s on %s channel %d...\n", serverAddr, clientAdapter, channel)
+	fmt.Printf("Connecting to %s on %s channel %d [%s]...\n", serverAddr, clientAdapter, channel, proto)
 	if err := c.Connect(serverAddr, channel); err != nil {
 		fmt.Fprintf(os.Stderr, "Connect error: %v\n", err)
 		os.Exit(1)
