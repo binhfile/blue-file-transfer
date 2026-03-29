@@ -21,7 +21,7 @@ jobs:
         run: go test -v -race -count=1 ./internal/...
       - name: Run coverage
         run: |
-          go test -coverprofile=coverage.out ./internal/...
+          go test -coverprofile=coverage.out ./internal/protocol/ ./internal/fsutil/ ./internal/transfer/ ./internal/server/ ./internal/client/
           go tool cover -func=coverage.out
 
   build:
