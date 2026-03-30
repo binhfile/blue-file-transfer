@@ -10,6 +10,7 @@ import (
 	"blue-file-transfer/internal/bt"
 	"blue-file-transfer/internal/client"
 	"blue-file-transfer/internal/server"
+	"blue-file-transfer/internal/web"
 )
 
 const version = "0.2.0"
@@ -52,6 +53,8 @@ func main() {
 		runOneShot(args, "exec")
 	case "shell":
 		runOneShot(args, "shell")
+	case "web":
+		runWeb(args)
 	case "pwd":
 		runOneShot(args, "pwd")
 	case "info":
@@ -92,6 +95,7 @@ One-shot commands (connect, run, exit):
   bft pwd   --server <addr> [conn-options]
   bft exec  --server <addr> --cmd <command> [conn-options]
   bft shell --server <addr> [conn-options]
+  bft web   --server <addr> [--port 8080] [--web-user admin] [--web-pass pass] [conn-options]
 
 User management:
   bft useradd --users-file <path> --user <name> --pass <password>
@@ -464,6 +468,34 @@ func runOneShot(args []string, command string) {
 			os.Exit(1)
 		}
 		os.Exit(int(exitCode))
+	}
+}
+
+func runWeb(args []string) {
+	flags := parseFlags(args)
+	c := connectOneShot(flags)
+	// Don't defer Disconnect — web server runs until killed
+
+	port := "8080"
+	if v, ok := flags["port"]; ok {
+		port = v
+	}
+	webUser := "admin"
+	if v, ok := flags["web-user"]; ok {
+		webUser = v
+	}
+	webPass := "quansu1!"
+	if v, ok := flags["web-pass"]; ok {
+		webPass = v
+	}
+
+	addr := "0.0.0.0:" + port
+	fmt.Printf("Web GUI: http://0.0.0.0:%s (user: %s)\n", port, webUser)
+
+	webSrv := web.New(c, webUser, webPass)
+	if err := webSrv.ListenAndServe(addr); err != nil {
+		fmt.Fprintf(os.Stderr, "Web error: %v\n", err)
+		os.Exit(1)
 	}
 }
 

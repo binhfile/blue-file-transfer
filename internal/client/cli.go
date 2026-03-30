@@ -87,6 +87,8 @@ func RunInteractiveCLI(c *Client) error {
 			handleExec(c, line)
 		case "shell":
 			handleShell(c)
+		case "web":
+			fmt.Println("Use 'bft web --server <addr>' for web GUI (one-shot command)")
 		default:
 			fmt.Printf("Unknown command: %s (type 'help' for commands)\n", cmd)
 		}
@@ -114,6 +116,7 @@ func printHelp() {
   exec <command>               Execute command on server
   ! <command>                  Shortcut for exec
   shell                        Interactive shell on server (like SSH)
+  web [port]                   Start web GUI (default: 8080)
   passwd                       Change password on server
   help                         Show this help
   exit                         Exit client`)
