@@ -237,6 +237,10 @@ async function loadDir(path) {
       return a.name.localeCompare(b.name);
     });
 
+    // Cache file sizes for download progress estimation
+    fileInfoCache = {};
+    data.entries.forEach(e => { if (e.type === 'file') fileInfoCache[e.name] = e.size; });
+
     if (data.entries.length === 0) {
       list.innerHTML = '<div class="empty"><div class="empty-icon">&#128193;</div><div class="empty-text">Empty folder</div></div>';
       return;
@@ -314,38 +318,47 @@ function setTransferIndeterminate(status) {
   document.getElementById('transferPercent').textContent = '';
 }
 
+// fileInfoCache stores file sizes from the last directory listing
+let fileInfoCache = {};
+
 async function doDownload(path) {
   const name = path.split('/').pop();
-  showTransfer('\u2B07', name, 'Downloading...');
-  setTransferIndeterminate('Downloading via Bluetooth...');
+  const fileSize = fileInfoCache[name] || 0;
+  showTransfer('\u2B07', name, 'Transferring via Bluetooth...');
+
+  // Estimate BT transfer time (~170 KB/s) and animate progress
+  const btSpeed = 170 * 1024; // bytes/sec estimate
+  const estimatedMs = fileSize > 0 ? (fileSize / btSpeed) * 1000 : 5000;
+  let startTime = Date.now();
+  let cancelled = false;
+
+  const progressTimer = setInterval(() => {
+    if (cancelled) return;
+    const elapsed = Date.now() - startTime;
+    // Ease out: progress approaches 90% during BT transfer
+    const pct = Math.min(90, (elapsed / estimatedMs) * 90);
+    const estTransferred = fileSize > 0 ? Math.min(fileSize, Math.floor(fileSize * pct / 100)) : 0;
+    updateTransfer(pct, fileSize > 0 ? formatSize(estTransferred) + ' / ' + formatSize(fileSize) : 'Please wait...');
+    document.getElementById('transferStatus').textContent = 'Transferring via Bluetooth...';
+  }, 200);
 
   try {
     const r = await fetch('/api/download?path=' + encodeURIComponent(path));
+    clearInterval(progressTimer);
+    cancelled = true;
+
     if (!r.ok) { const t = await r.text(); throw new Error(t); }
 
-    const total = parseInt(r.headers.get('content-length') || '0');
-    const reader = r.body.getReader();
-    const chunks = [];
-    let received = 0;
+    // BT transfer done, now reading HTTP response
+    document.getElementById('transferStatus').textContent = 'Saving...';
+    updateTransfer(95, fileSize > 0 ? formatSize(fileSize) : '');
 
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.length;
-      if (total > 0) {
-        const pct = (received / total) * 100;
-        updateTransfer(pct, formatSize(received) + ' / ' + formatSize(total));
-      } else {
-        document.getElementById('transferDetail').textContent = formatSize(received);
-      }
-    }
+    const blob = await r.blob();
 
-    updateTransfer(100, formatSize(received));
+    updateTransfer(100, formatSize(blob.size));
     document.getElementById('transferStatus').textContent = 'Complete!';
 
-    // Trigger browser download
-    const blob = new Blob(chunks);
+    // Trigger browser save
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = name;
@@ -353,8 +366,10 @@ async function doDownload(path) {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    setTimeout(hideTransfer, 800);
+    setTimeout(hideTransfer, 1000);
   } catch(e) {
+    clearInterval(progressTimer);
+    cancelled = true;
     hideTransfer();
     toast('Download failed: ' + e.message, true);
   }
