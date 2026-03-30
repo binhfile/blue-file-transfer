@@ -37,6 +37,10 @@ jobs:
           - os: linux
             arch: arm64
             ext: ""
+          - os: linux
+            arch: arm
+            goarm: "7"
+            ext: ""
           - os: windows
             arch: amd64
             ext: ".exe"
@@ -51,6 +55,7 @@ jobs:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
+          GOARM: ${{ matrix.goarm }}
         run: |
           go build -ldflags="-s -w" -o build/bft${{ matrix.ext }} ./cmd/bft/
 
@@ -92,4 +97,5 @@ jobs:
           files: |
             bft-linux-amd64/bft-linux-amd64.tar.gz
             bft-linux-arm64/bft-linux-arm64.tar.gz
+            bft-linux-arm/bft-linux-arm.tar.gz
             bft-windows-amd64/bft-windows-amd64.tar.gz
