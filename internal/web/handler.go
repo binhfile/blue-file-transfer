@@ -88,8 +88,9 @@ func (s *Server) handleLS(w http.ResponseWriter, r *http.Request) {
 		path = "/"
 	}
 
-	if path != "/" && path != "" {
-		if err := s.client.ChDir(path); err != nil {
+	relPath := toRelative(path)
+	if relPath != "." {
+		if err := s.client.ChDir(relPath); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -101,7 +102,7 @@ func (s *Server) handleLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if path != "/" && path != "" {
+	if relPath != "." {
 		s.client.ChDir("/")
 	}
 
@@ -122,6 +123,18 @@ func (s *Server) handleLS(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("]}"))
 }
 
+// toRelative strips leading "/" from web paths so the BFT server
+// treats them as relative to its root directory.
+func toRelative(path string) string {
+	for len(path) > 0 && path[0] == '/' {
+		path = path[1:]
+	}
+	if path == "" {
+		return "."
+	}
+	return path
+}
+
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
@@ -136,7 +149,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := s.client.Download(path, tmpDir, nil)
+	result, err := s.client.Download(toRelative(path), tmpDir, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -201,7 +214,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		remoteFile = remotePath + "/" + header.Filename
 	}
 
-	if err := s.client.Upload(tmpFile.Name(), remoteFile, nil); err != nil {
+	if err := s.client.Upload(tmpFile.Name(), toRelative(remoteFile), nil); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -220,7 +233,7 @@ func (s *Server) handleMkdir(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
-	if err := s.client.Mkdir(path); err != nil {
+	if err := s.client.Mkdir(toRelative(path)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -238,7 +251,7 @@ func (s *Server) handleRm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
-	if err := s.client.Delete(path); err != nil {
+	if err := s.client.Delete(toRelative(path)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
