@@ -478,6 +478,10 @@ func (s *Server) handleUpload(conn io.ReadWriter, currentDir string, payload []b
 			s.logger.Printf("ReceiveFile error: %v", err)
 			return
 		}
+		// Log received file size
+		if fi, err := os.Stat(safePath); err == nil {
+			s.logger.Printf("Received: %s (%d bytes)", safePath, fi.Size())
+		}
 	}
 
 	s.sendOK(conn)

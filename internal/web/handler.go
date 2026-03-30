@@ -190,31 +190,70 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		remotePath = "/"
 	}
 
-	r.ParseMultipartForm(64 << 20)
-	file, header, err := r.FormFile("file")
+	// Use multipart reader to stream file directly — no memory limit
+	mr, err := r.MultipartReader()
 	if err != nil {
-		http.Error(w, "file required: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "multipart error: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	defer file.Close()
 
-	tmpFile, err := os.CreateTemp("", "bft-upload-*-"+header.Filename)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	var filename string
+	var tmpPath string
+
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			http.Error(w, "read part: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if part.FormName() != "file" {
+			part.Close()
+			continue
+		}
+
+		filename = part.FileName()
+		if filename == "" {
+			part.Close()
+			continue
+		}
+
+		tmpFile, err := os.CreateTemp("", "bft-upload-*-"+filename)
+		if err != nil {
+			part.Close()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tmpPath = tmpFile.Name()
+
+		written, err := io.Copy(tmpFile, part)
+		tmpFile.Close()
+		part.Close()
+
+		if err != nil {
+			os.Remove(tmpPath)
+			http.Error(w, "save file: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.logger.Printf("Upload: %s (%d bytes) -> %s", filename, written, remotePath)
+		break
+	}
+
+	if filename == "" || tmpPath == "" {
+		http.Error(w, "no file in request", http.StatusBadRequest)
 		return
 	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
+	defer os.Remove(tmpPath)
 
-	io.Copy(tmpFile, file)
-	tmpFile.Close()
-
-	remoteFile := header.Filename
+	remoteFile := filename
 	if remotePath != "/" {
-		remoteFile = remotePath + "/" + header.Filename
+		remoteFile = remotePath + "/" + filename
 	}
 
-	if err := s.client.Upload(tmpFile.Name(), toRelative(remoteFile), nil); err != nil {
+	if err := s.client.Upload(tmpPath, toRelative(remoteFile), nil); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
