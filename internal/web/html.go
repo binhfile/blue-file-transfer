@@ -97,9 +97,23 @@ body { font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica N
 .toast.error { background: var(--red); color: #fff; }
 .toast.show { display: block; }
 
-/* Progress */
+/* Top progress bar */
 .progress { display: none; height: 3px; background: var(--blue); position: fixed; top: 0; left: 0; z-index: 300; transition: width 0.3s; border-radius: 0 2px 2px 0; }
 .progress.show { display: block; }
+
+/* Transfer overlay */
+.transfer-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 250; justify-content: center; align-items: center; }
+.transfer-overlay.show { display: flex; }
+.transfer-card { background: var(--bg-secondary); border-radius: 14px; padding: 24px; width: 300px; text-align: center; }
+.transfer-icon { font-size: 40px; margin-bottom: 12px; }
+.transfer-filename { font-size: 15px; color: var(--label); font-weight: 600; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.transfer-status { font-size: 13px; color: var(--label-secondary); margin-bottom: 16px; }
+.progress-track { height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+.progress-fill { height: 100%; background: var(--blue); border-radius: 3px; transition: width 0.2s; width: 0%; }
+.progress-fill.indeterminate { width: 30%; animation: indeterminate 1.5s ease-in-out infinite; }
+@keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+.transfer-percent { font-size: 22px; font-weight: 700; color: var(--label); font-variant-numeric: tabular-nums; }
+.transfer-detail { font-size: 13px; color: var(--label-secondary); margin-top: 4px; }
 
 /* Empty state */
 .empty { text-align: center; padding: 48px 16px; color: var(--label-secondary); }
@@ -160,6 +174,17 @@ body { font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica N
       <button class="btn-cancel" onclick="hideModal('mkdirModal')">Cancel</button>
       <button class="btn-ok" onclick="doMkdir()">Create</button>
     </div>
+  </div>
+</div>
+
+<div class="transfer-overlay" id="transferOverlay">
+  <div class="transfer-card">
+    <div class="transfer-icon" id="transferIcon">&#8595;</div>
+    <div class="transfer-filename" id="transferName">filename.txt</div>
+    <div class="transfer-status" id="transferStatus">Preparing...</div>
+    <div class="progress-track"><div class="progress-fill" id="transferBar"></div></div>
+    <div class="transfer-percent" id="transferPercent">0%</div>
+    <div class="transfer-detail" id="transferDetail"></div>
   </div>
 </div>
 
@@ -261,8 +286,78 @@ function goUp() {
   loadDir('/' + parts.join('/'));
 }
 
-function doDownload(path) {
-  window.location.href = '/api/download?path=' + encodeURIComponent(path);
+function showTransfer(icon, name, status) {
+  document.getElementById('transferIcon').textContent = icon;
+  document.getElementById('transferName').textContent = name;
+  document.getElementById('transferStatus').textContent = status;
+  document.getElementById('transferPercent').textContent = '';
+  document.getElementById('transferDetail').textContent = '';
+  document.getElementById('transferBar').style.width = '0%';
+  document.getElementById('transferBar').classList.remove('indeterminate');
+  document.getElementById('transferOverlay').classList.add('show');
+}
+
+function updateTransfer(percent, detail) {
+  document.getElementById('transferBar').style.width = percent + '%';
+  document.getElementById('transferBar').classList.remove('indeterminate');
+  document.getElementById('transferPercent').textContent = Math.round(percent) + '%';
+  if (detail) document.getElementById('transferDetail').textContent = detail;
+}
+
+function hideTransfer() {
+  document.getElementById('transferOverlay').classList.remove('show');
+}
+
+function setTransferIndeterminate(status) {
+  document.getElementById('transferStatus').textContent = status;
+  document.getElementById('transferBar').classList.add('indeterminate');
+  document.getElementById('transferPercent').textContent = '';
+}
+
+async function doDownload(path) {
+  const name = path.split('/').pop();
+  showTransfer('\u2B07', name, 'Downloading...');
+  setTransferIndeterminate('Downloading via Bluetooth...');
+
+  try {
+    const r = await fetch('/api/download?path=' + encodeURIComponent(path));
+    if (!r.ok) { const t = await r.text(); throw new Error(t); }
+
+    const total = parseInt(r.headers.get('content-length') || '0');
+    const reader = r.body.getReader();
+    const chunks = [];
+    let received = 0;
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      if (total > 0) {
+        const pct = (received / total) * 100;
+        updateTransfer(pct, formatSize(received) + ' / ' + formatSize(total));
+      } else {
+        document.getElementById('transferDetail').textContent = formatSize(received);
+      }
+    }
+
+    updateTransfer(100, formatSize(received));
+    document.getElementById('transferStatus').textContent = 'Complete!';
+
+    // Trigger browser download
+    const blob = new Blob(chunks);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setTimeout(hideTransfer, 800);
+  } catch(e) {
+    hideTransfer();
+    toast('Download failed: ' + e.message, true);
+  }
 }
 
 async function doRm(path) {
@@ -286,14 +381,49 @@ function handleDrop(e) {
 }
 
 async function uploadFiles(files) {
-  for (const file of files) {
-    const fd = new FormData();
-    fd.append('file', file);
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const label = files.length > 1 ? '(' + (i+1) + '/' + files.length + ') ' + file.name : file.name;
+    showTransfer('\u2B06', label, 'Uploading via Bluetooth...');
+
     try {
-      await api('/api/upload?path=' + encodeURIComponent(currentPath), {method:'POST', body: fd});
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload?path=' + encodeURIComponent(currentPath));
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const pct = (e.loaded / e.total) * 100;
+            updateTransfer(pct, formatSize(e.loaded) + ' / ' + formatSize(e.total));
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            updateTransfer(100, formatSize(file.size));
+            document.getElementById('transferStatus').textContent = 'Complete!';
+            resolve();
+          } else {
+            reject(new Error(xhr.responseText));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Network error'));
+
+        const fd = new FormData();
+        fd.append('file', file);
+        xhr.send(fd);
+      });
+
+      await new Promise(r => setTimeout(r, 500));
       toast('Uploaded: ' + file.name);
-    } catch(e) { toast('Upload failed', true); }
+    } catch(e) {
+      hideTransfer();
+      toast('Upload failed: ' + e.message, true);
+    }
   }
+
+  hideTransfer();
   document.getElementById('fileInput').value = '';
   refresh();
 }
