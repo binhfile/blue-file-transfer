@@ -399,30 +399,26 @@ async function uploadFiles(files) {
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const label = files.length > 1 ? '(' + (i+1) + '/' + files.length + ') ' + file.name : file.name;
-    showTransfer('\u2B06', label, 'Uploading via Bluetooth...');
+    showTransfer('\u2B06', label, 'Sending to server...');
 
     try {
-      await new Promise((resolve, reject) => {
+      // Phase 1: HTTP upload (browser -> web server, fast on LAN)
+      const httpDone = new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/api/upload?path=' + encodeURIComponent(currentPath));
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
-            const pct = (e.loaded / e.total) * 100;
-            updateTransfer(pct, formatSize(e.loaded) + ' / ' + formatSize(e.total));
+            // HTTP upload is ~10% of total (fast local network)
+            const pct = (e.loaded / e.total) * 10;
+            updateTransfer(pct, 'Sending: ' + formatSize(e.loaded) + ' / ' + formatSize(e.total));
           }
         };
 
         xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            updateTransfer(100, formatSize(file.size));
-            document.getElementById('transferStatus').textContent = 'Complete!';
-            resolve();
-          } else {
-            reject(new Error(xhr.responseText));
-          }
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(xhr.responseText));
         };
-
         xhr.onerror = () => reject(new Error('Network error'));
 
         const fd = new FormData();
@@ -430,6 +426,34 @@ async function uploadFiles(files) {
         xhr.send(fd);
       });
 
+      // Phase 2 starts when phase 1 completes
+      // The XHR.onload fires AFTER the server finishes BT transfer
+      // So we estimate BT progress during the wait
+
+      const btSpeed = 170 * 1024;
+      const estimatedMs = (file.size / btSpeed) * 1000;
+      let startTime = Date.now();
+      let btDone = false;
+
+      // Start BT progress estimation once HTTP upload starts
+      // (server receives file, then transfers via BT)
+      const progressTimer = setInterval(() => {
+        if (btDone) return;
+        const elapsed = Date.now() - startTime;
+        // 10-95%: BT transfer phase
+        const btPct = Math.min(85, (elapsed / estimatedMs) * 85);
+        const pct = 10 + btPct;
+        const estBytes = Math.min(file.size, Math.floor(file.size * pct / 100));
+        updateTransfer(pct, formatSize(estBytes) + ' / ' + formatSize(file.size));
+        document.getElementById('transferStatus').textContent = 'Transferring via Bluetooth...';
+      }, 200);
+
+      await httpDone;
+      clearInterval(progressTimer);
+      btDone = true;
+
+      updateTransfer(100, formatSize(file.size));
+      document.getElementById('transferStatus').textContent = 'Complete!';
       await new Promise(r => setTimeout(r, 500));
       toast('Uploaded: ' + file.name);
     } catch(e) {
