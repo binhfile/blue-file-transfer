@@ -114,6 +114,8 @@ body { font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica N
 @keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
 .transfer-percent { font-size: 22px; font-weight: 700; color: var(--label); font-variant-numeric: tabular-nums; }
 .transfer-detail { font-size: 13px; color: var(--label-secondary); margin-top: 4px; }
+.transfer-stats { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: var(--label-secondary); font-variant-numeric: tabular-nums; }
+.transfer-stats span { display: flex; align-items: center; gap: 3px; }
 
 /* Empty state */
 .empty { text-align: center; padding: 48px 16px; color: var(--label-secondary); }
@@ -185,6 +187,11 @@ body { font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica N
     <div class="progress-track"><div class="progress-fill" id="transferBar"></div></div>
     <div class="transfer-percent" id="transferPercent">0%</div>
     <div class="transfer-detail" id="transferDetail"></div>
+    <div class="transfer-stats">
+      <span id="transferSpeed">-- Kbps</span>
+      <span id="transferElapsed">0:00</span>
+      <span id="transferEta">ETA --</span>
+    </div>
   </div>
 </div>
 
@@ -290,6 +297,22 @@ function goUp() {
   loadDir('/' + parts.join('/'));
 }
 
+let transferStartTime = 0;
+
+function formatTime(sec) {
+  if (sec < 0 || !isFinite(sec)) return '--:--';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return m + ':' + (s < 10 ? '0' : '') + s;
+}
+
+function formatSpeed(bytesPerSec) {
+  const bps = bytesPerSec * 8;
+  if (bps >= 1000000) return (bps/1000000).toFixed(1) + ' Mbps';
+  if (bps >= 1000) return (bps/1000).toFixed(0) + ' Kbps';
+  return Math.round(bps) + ' bps';
+}
+
 function showTransfer(icon, name, status) {
   document.getElementById('transferIcon').textContent = icon;
   document.getElementById('transferName').textContent = name;
@@ -298,7 +321,11 @@ function showTransfer(icon, name, status) {
   document.getElementById('transferDetail').textContent = '';
   document.getElementById('transferBar').style.width = '0%';
   document.getElementById('transferBar').classList.remove('indeterminate');
+  document.getElementById('transferSpeed').textContent = '-- Kbps';
+  document.getElementById('transferElapsed').textContent = '0:00';
+  document.getElementById('transferEta').textContent = 'ETA --';
   document.getElementById('transferOverlay').classList.add('show');
+  transferStartTime = Date.now();
 }
 
 function updateTransfer(percent, detail) {
@@ -308,14 +335,26 @@ function updateTransfer(percent, detail) {
   if (detail) document.getElementById('transferDetail').textContent = detail;
 }
 
-function hideTransfer() {
-  document.getElementById('transferOverlay').classList.remove('show');
+function updateTransferStats(bytesTransferred, totalBytes) {
+  const elapsed = (Date.now() - transferStartTime) / 1000;
+  document.getElementById('transferElapsed').textContent = formatTime(elapsed);
+
+  if (elapsed > 0.5 && bytesTransferred > 0) {
+    const speed = bytesTransferred / elapsed;
+    document.getElementById('transferSpeed').textContent = formatSpeed(speed);
+
+    if (totalBytes > 0 && bytesTransferred < totalBytes) {
+      const remaining = totalBytes - bytesTransferred;
+      const eta = remaining / speed;
+      document.getElementById('transferEta').textContent = 'ETA ' + formatTime(eta);
+    } else {
+      document.getElementById('transferEta').textContent = '';
+    }
+  }
 }
 
-function setTransferIndeterminate(status) {
-  document.getElementById('transferStatus').textContent = status;
-  document.getElementById('transferBar').classList.add('indeterminate');
-  document.getElementById('transferPercent').textContent = '';
+function hideTransfer() {
+  document.getElementById('transferOverlay').classList.remove('show');
 }
 
 // fileInfoCache stores file sizes from the last directory listing
@@ -335,11 +374,11 @@ async function doDownload(path) {
   const progressTimer = setInterval(() => {
     if (cancelled) return;
     const elapsed = Date.now() - startTime;
-    // Ease out: progress approaches 90% during BT transfer
     const pct = Math.min(90, (elapsed / estimatedMs) * 90);
     const estTransferred = fileSize > 0 ? Math.min(fileSize, Math.floor(fileSize * pct / 100)) : 0;
     updateTransfer(pct, fileSize > 0 ? formatSize(estTransferred) + ' / ' + formatSize(fileSize) : 'Please wait...');
     document.getElementById('transferStatus').textContent = 'Transferring via Bluetooth...';
+    if (fileSize > 0) updateTransferStats(estTransferred, fileSize);
   }, 200);
 
   try {
@@ -349,7 +388,6 @@ async function doDownload(path) {
 
     if (!r.ok) { const t = await r.text(); throw new Error(t); }
 
-    // BT transfer done, now reading HTTP response
     document.getElementById('transferStatus').textContent = 'Saving...';
     updateTransfer(95, fileSize > 0 ? formatSize(fileSize) : '');
 
@@ -357,6 +395,8 @@ async function doDownload(path) {
 
     updateTransfer(100, formatSize(blob.size));
     document.getElementById('transferStatus').textContent = 'Complete!';
+    updateTransferStats(blob.size, blob.size);
+    document.getElementById('transferEta').textContent = '';
 
     // Trigger browser save
     const url = URL.createObjectURL(blob);
@@ -440,12 +480,12 @@ async function uploadFiles(files) {
       const progressTimer = setInterval(() => {
         if (btDone) return;
         const elapsed = Date.now() - startTime;
-        // 10-95%: BT transfer phase
         const btPct = Math.min(85, (elapsed / estimatedMs) * 85);
         const pct = 10 + btPct;
         const estBytes = Math.min(file.size, Math.floor(file.size * pct / 100));
         updateTransfer(pct, formatSize(estBytes) + ' / ' + formatSize(file.size));
         document.getElementById('transferStatus').textContent = 'Transferring via Bluetooth...';
+        updateTransferStats(estBytes, file.size);
       }, 200);
 
       await httpDone;
@@ -454,6 +494,8 @@ async function uploadFiles(files) {
 
       updateTransfer(100, formatSize(file.size));
       document.getElementById('transferStatus').textContent = 'Complete!';
+      updateTransferStats(file.size, file.size);
+      document.getElementById('transferEta').textContent = '';
       await new Promise(r => setTimeout(r, 500));
       toast('Uploaded: ' + file.name);
     } catch(e) {
