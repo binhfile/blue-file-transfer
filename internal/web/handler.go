@@ -88,22 +88,10 @@ func (s *Server) handleLS(w http.ResponseWriter, r *http.Request) {
 		path = "/"
 	}
 
-	relPath := toRelative(path)
-	if relPath != "." {
-		if err := s.client.ChDir(relPath); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	listing, err := s.client.ListDir("")
+	listing, err := s.client.ListDir(toRelative(path))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
-	}
-
-	if relPath != "." {
-		s.client.ChDir("/")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
