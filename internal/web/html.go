@@ -4,110 +4,161 @@ const indexHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BFT - Bluetooth File Transfer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1c1c1e">
+<title>BFT</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; }
-.header { background: #161b22; border-bottom: 1px solid #30363d; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; }
-.header h1 { font-size: 18px; color: #58a6ff; }
-.header .status { font-size: 13px; color: #8b949e; }
-.toolbar { background: #161b22; border-bottom: 1px solid #30363d; padding: 8px 20px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.path-bar { flex: 1; min-width: 200px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 6px 12px; color: #c9d1d9; font-family: monospace; font-size: 14px; }
-.btn { padding: 6px 14px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #c9d1d9; cursor: pointer; font-size: 13px; white-space: nowrap; }
-.btn:hover { background: #30363d; }
-.btn-primary { background: #238636; border-color: #2ea043; color: #fff; }
-.btn-primary:hover { background: #2ea043; }
-.btn-danger { background: #da3633; border-color: #f85149; color: #fff; }
-.btn-danger:hover { background: #f85149; }
-.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-table { width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
-th { text-align: left; padding: 10px 16px; background: #21262d; color: #8b949e; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
-td { padding: 8px 16px; border-top: 1px solid #21262d; font-size: 14px; }
-tr:hover td { background: #1c2128; }
-.icon { margin-right: 8px; }
-.dir-icon { color: #54aeff; }
-.file-icon { color: #8b949e; }
-a.name { color: #58a6ff; text-decoration: none; cursor: pointer; }
-a.name:hover { text-decoration: underline; }
-.size { color: #8b949e; text-align: right; }
-.time { color: #8b949e; }
-.actions { text-align: right; }
-.actions .btn { padding: 3px 10px; font-size: 12px; margin-left: 4px; }
-.upload-area { border: 2px dashed #30363d; border-radius: 8px; padding: 30px; text-align: center; margin: 16px 0; color: #8b949e; cursor: pointer; transition: all 0.2s; }
-.upload-area:hover, .upload-area.drag { border-color: #58a6ff; color: #58a6ff; background: rgba(88,166,255,0.05); }
+:root {
+  --bg: #000000;
+  --bg-secondary: #1c1c1e;
+  --bg-tertiary: #2c2c2e;
+  --bg-grouped: #1c1c1e;
+  --separator: #38383a;
+  --label: #ffffff;
+  --label-secondary: #8e8e93;
+  --blue: #0a84ff;
+  --green: #30d158;
+  --red: #ff453a;
+  --orange: #ff9f0a;
+  --tint: #0a84ff;
+  --fill: #787880;
+  --radius: 10px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body { font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', sans-serif; background: var(--bg); color: var(--label); font-size: 17px; -webkit-font-smoothing: antialiased; padding-top: var(--safe-top); padding-bottom: var(--safe-bottom); min-height: 100vh; }
+
+/* Navigation bar */
+.nav-bar { background: rgba(28,28,30,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-bottom: 0.5px solid var(--separator); padding: 12px 16px; position: sticky; top: 0; z-index: 50; }
+.nav-title { font-size: 17px; font-weight: 600; text-align: center; color: var(--label); }
+.nav-subtitle { font-size: 13px; color: var(--label-secondary); text-align: center; margin-top: 2px; font-family: 'SF Mono', monospace; }
+
+/* Toolbar */
+.toolbar { display: flex; gap: 8px; padding: 8px 16px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.toolbar::-webkit-scrollbar { display: none; }
+.pill { padding: 7px 14px; border-radius: 20px; background: var(--bg-tertiary); color: var(--label); font-size: 15px; font-weight: 500; border: none; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 5px; }
+.pill:active { opacity: 0.6; }
+.pill.blue { background: var(--blue); color: #fff; }
+.pill.green { background: var(--green); color: #000; }
+
+/* List (iOS grouped style) */
+.list { margin: 8px 16px; background: var(--bg-grouped); border-radius: var(--radius); overflow: hidden; }
+.list-item { display: flex; align-items: center; padding: 11px 16px; border-bottom: 0.5px solid var(--separator); cursor: pointer; transition: background 0.1s; gap: 12px; }
+.list-item:last-child { border-bottom: none; }
+.list-item:active { background: var(--bg-tertiary); }
+.list-icon { font-size: 28px; flex-shrink: 0; width: 32px; text-align: center; }
+.list-content { flex: 1; min-width: 0; }
+.list-title { font-size: 17px; color: var(--label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-detail { font-size: 13px; color: var(--label-secondary); margin-top: 2px; }
+.list-accessory { color: var(--label-secondary); font-size: 13px; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.list-chevron { color: var(--fill); font-size: 14px; }
+.list-actions { display: flex; gap: 6px; }
+.action-btn { padding: 5px 12px; border-radius: 14px; border: none; font-size: 13px; font-weight: 600; cursor: pointer; }
+.action-btn:active { opacity: 0.6; }
+.action-dl { background: var(--blue); color: #fff; }
+.action-rm { background: rgba(255,69,58,0.15); color: var(--red); }
+
+/* Upload area */
+.upload-area { margin: 8px 16px; border: 2px dashed var(--separator); border-radius: var(--radius); padding: 32px 16px; text-align: center; color: var(--label-secondary); font-size: 15px; cursor: pointer; transition: all 0.2s; }
+.upload-area:active, .upload-area.drag { border-color: var(--blue); color: var(--blue); background: rgba(10,132,255,0.05); }
 .upload-area input { display: none; }
-.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 100; justify-content: center; align-items: center; }
-.modal-overlay.show { display: flex; }
-.modal { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; min-width: 400px; max-width: 90%; }
-.modal h3 { margin-bottom: 16px; color: #c9d1d9; }
-.modal input[type=text] { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 14px; margin-bottom: 12px; }
-.modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; }
-.terminal { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; margin: 16px 0; display: none; }
+.upload-icon { font-size: 36px; margin-bottom: 8px; }
+
+/* Terminal */
+.terminal { margin: 8px 16px; background: var(--bg-grouped); border-radius: var(--radius); overflow: hidden; display: none; }
 .terminal.show { display: block; }
-.terminal-header { background: #21262d; padding: 8px 12px; border-bottom: 1px solid #30363d; display: flex; align-items: center; justify-content: space-between; }
-.terminal-header span { color: #8b949e; font-size: 13px; }
-.terminal-body { padding: 12px; font-family: monospace; font-size: 13px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; color: #c9d1d9; }
-.terminal-input { display: flex; border-top: 1px solid #30363d; }
-.terminal-input input { flex: 1; background: #0d1117; border: none; padding: 8px 12px; color: #c9d1d9; font-family: monospace; font-size: 13px; outline: none; }
-.terminal-input .btn { border-radius: 0; border: none; border-left: 1px solid #30363d; }
-.stderr { color: #f85149; }
-.toast { position: fixed; bottom: 20px; right: 20px; background: #238636; color: #fff; padding: 10px 20px; border-radius: 6px; font-size: 14px; z-index: 200; display: none; }
-.toast.error { background: #da3633; }
+.terminal-bar { padding: 10px 16px; background: var(--bg-tertiary); display: flex; align-items: center; justify-content: space-between; border-bottom: 0.5px solid var(--separator); }
+.terminal-bar span { font-size: 15px; font-weight: 600; }
+.terminal-body { padding: 12px 16px; font-family: 'SF Mono', 'Menlo', monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; max-height: 300px; overflow-y: auto; -webkit-overflow-scrolling: touch; color: var(--label); }
+.terminal-input { display: flex; border-top: 0.5px solid var(--separator); }
+.terminal-input input { flex: 1; background: transparent; border: none; padding: 12px 16px; color: var(--label); font-family: 'SF Mono', 'Menlo', monospace; font-size: 15px; outline: none; }
+.terminal-input button { background: var(--blue); color: #fff; border: none; padding: 12px 20px; font-size: 15px; font-weight: 600; cursor: pointer; }
+.terminal-input button:active { opacity: 0.6; }
+.cmd-line { color: var(--blue); }
+.stderr { color: var(--red); }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 100; justify-content: center; align-items: flex-end; }
+.modal-overlay.show { display: flex; }
+.modal { background: var(--bg-secondary); border-radius: 14px 14px 0 0; padding: 20px 16px; width: 100%; max-width: 500px; padding-bottom: calc(20px + var(--safe-bottom)); }
+.modal h3 { font-size: 17px; font-weight: 600; margin-bottom: 16px; text-align: center; }
+.modal input[type=text] { width: 100%; padding: 12px 16px; background: var(--bg-tertiary); border: none; border-radius: var(--radius); color: var(--label); font-size: 17px; margin-bottom: 12px; outline: none; }
+.modal input[type=text]::placeholder { color: var(--fill); }
+.modal .btn-row { display: flex; gap: 8px; }
+.modal .btn-row button { flex: 1; padding: 14px; border-radius: var(--radius); border: none; font-size: 17px; font-weight: 600; cursor: pointer; }
+.modal .btn-cancel { background: var(--bg-tertiary); color: var(--label); }
+.modal .btn-ok { background: var(--blue); color: #fff; }
+
+/* Toast */
+.toast { position: fixed; bottom: calc(20px + var(--safe-bottom)); left: 50%; transform: translateX(-50%); background: var(--bg-tertiary); color: var(--label); padding: 12px 24px; border-radius: 22px; font-size: 15px; z-index: 200; display: none; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+.toast.error { background: var(--red); color: #fff; }
 .toast.show { display: block; }
-.progress { display: none; height: 3px; background: #238636; position: fixed; top: 0; left: 0; z-index: 300; transition: width 0.3s; }
+
+/* Progress */
+.progress { display: none; height: 3px; background: var(--blue); position: fixed; top: 0; left: 0; z-index: 300; transition: width 0.3s; border-radius: 0 2px 2px 0; }
 .progress.show { display: block; }
+
+/* Empty state */
+.empty { text-align: center; padding: 48px 16px; color: var(--label-secondary); }
+.empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
+.empty-text { font-size: 17px; }
+
+@media (min-width: 768px) {
+  .modal { border-radius: 14px; align-self: center; }
+  .modal { padding-bottom: 20px; }
+  .list-item { padding: 12px 20px; }
+}
 </style>
 </head>
 <body>
 
 <div class="progress" id="progress"></div>
 
-<div class="header">
-  <h1>BFT - Bluetooth File Transfer</h1>
-  <span class="status" id="status">Connected</span>
+<div class="nav-bar">
+  <div class="nav-title">Bluetooth File Transfer</div>
+  <div class="nav-subtitle" id="pathBar">/</div>
 </div>
 
 <div class="toolbar">
-  <button class="btn" onclick="goUp()">&#8593; Up</button>
-  <button class="btn" onclick="refresh()">&#8635; Refresh</button>
-  <input class="path-bar" id="pathBar" value="/" readonly>
-  <button class="btn btn-primary" onclick="showUpload()">&#8593; Upload</button>
-  <button class="btn" onclick="showMkdir()">+ Folder</button>
-  <button class="btn" onclick="toggleTerminal()">&#9638; Terminal</button>
+  <button class="pill" onclick="goUp()">&#9664; Back</button>
+  <button class="pill" onclick="refresh()">&#8635; Refresh</button>
+  <button class="pill green" onclick="showUpload()">&#8593; Upload</button>
+  <button class="pill blue" onclick="showMkdir()">+ Folder</button>
+  <button class="pill" onclick="toggleTerminal()">&#9654; Terminal</button>
 </div>
 
-<div class="container">
-  <table>
-    <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th class="actions">Actions</th></tr></thead>
-    <tbody id="fileList"></tbody>
-  </table>
+<div id="fileListContainer">
+  <div class="list" id="fileList"></div>
+</div>
 
-  <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="handleDrop(event)">
-    Drop files here or click to upload
-    <input type="file" id="fileInput" multiple onchange="uploadFiles(this.files)">
+<div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()" ondragover="event.preventDefault();this.classList.add('drag')" ondragleave="this.classList.remove('drag')" ondrop="handleDrop(event)">
+  <div class="upload-icon">&#9729;</div>
+  Drop files here or tap to upload
+  <input type="file" id="fileInput" multiple onchange="uploadFiles(this.files)">
+</div>
+
+<div class="terminal" id="terminal">
+  <div class="terminal-bar">
+    <span>Terminal</span>
+    <button class="pill" onclick="toggleTerminal()" style="font-size:13px;padding:4px 12px;">Close</button>
   </div>
-
-  <div class="terminal" id="terminal">
-    <div class="terminal-header">
-      <span>Remote Terminal</span>
-      <button class="btn" onclick="toggleTerminal()">Close</button>
-    </div>
-    <div class="terminal-body" id="termOutput"></div>
-    <div class="terminal-input">
-      <input id="termInput" placeholder="Enter command..." onkeydown="if(event.key==='Enter')runCmd()">
-      <button class="btn btn-primary" onclick="runCmd()">Run</button>
-    </div>
+  <div class="terminal-body" id="termOutput"></div>
+  <div class="terminal-input">
+    <input id="termInput" placeholder="Enter command..." onkeydown="if(event.key==='Enter')runCmd()">
+    <button onclick="runCmd()">Run</button>
   </div>
 </div>
 
-<div class="modal-overlay" id="mkdirModal">
+<div class="modal-overlay" id="mkdirModal" onclick="if(event.target===this)hideModal('mkdirModal')">
   <div class="modal">
-    <h3>Create Folder</h3>
+    <h3>New Folder</h3>
     <input type="text" id="mkdirName" placeholder="Folder name" onkeydown="if(event.key==='Enter')doMkdir()">
     <div class="btn-row">
-      <button class="btn" onclick="hideModal('mkdirModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="doMkdir()">Create</button>
+      <button class="btn-cancel" onclick="hideModal('mkdirModal')">Cancel</button>
+      <button class="btn-ok" onclick="doMkdir()">Create</button>
     </div>
   </div>
 </div>
@@ -136,13 +187,13 @@ function toast(msg, isError) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.className = 'toast show' + (isError ? ' error' : '');
-  setTimeout(() => t.classList.remove('show'), 3000);
+  setTimeout(() => t.classList.remove('show'), 2500);
 }
 
 function formatSize(b) {
-  if (b >= 1073741824) return (b/1073741824).toFixed(2) + ' GB';
-  if (b >= 1048576) return (b/1048576).toFixed(2) + ' MB';
-  if (b >= 1024) return (b/1024).toFixed(1) + ' KB';
+  if (b >= 1073741824) return (b/1073741824).toFixed(1) + ' GB';
+  if (b >= 1048576) return (b/1048576).toFixed(1) + ' MB';
+  if (b >= 1024) return (b/1024).toFixed(0) + ' KB';
   return b + ' B';
 }
 
@@ -151,37 +202,53 @@ async function loadDir(path) {
     const r = await api('/api/ls?path=' + encodeURIComponent(path));
     const data = await r.json();
     currentPath = data.path;
-    document.getElementById('pathBar').value = currentPath;
+    document.getElementById('pathBar').textContent = currentPath;
 
-    const tbody = document.getElementById('fileList');
-    tbody.innerHTML = '';
+    const list = document.getElementById('fileList');
+    list.innerHTML = '';
+
     data.entries.sort((a,b) => {
       if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
+
+    if (data.entries.length === 0) {
+      list.innerHTML = '<div class="empty"><div class="empty-icon">&#128193;</div><div class="empty-text">Empty folder</div></div>';
+      return;
+    }
+
     data.entries.forEach(e => {
-      const tr = document.createElement('tr');
       const isDir = e.type === 'dir';
-      const icon = isDir ? '<span class="icon dir-icon">&#128193;</span>' : '<span class="icon file-icon">&#128196;</span>';
       const fullPath = currentPath === '/' ? '/' + e.name : currentPath + '/' + e.name;
+      const escapedPath = fullPath.replace(/'/g, "\\'");
 
-      let nameHtml;
+      const item = document.createElement('div');
+      item.className = 'list-item';
+
       if (isDir) {
-        nameHtml = '<a class="name" onclick="loadDir(\'' + fullPath.replace(/'/g,"\\'") + '\')">' + icon + e.name + '</a>';
+        item.onclick = () => loadDir(fullPath);
+        item.innerHTML =
+          '<div class="list-icon">&#128193;</div>' +
+          '<div class="list-content"><div class="list-title">' + e.name + '</div>' +
+          '<div class="list-detail">' + e.time + '</div></div>' +
+          '<div class="list-accessory"><div class="list-actions">' +
+          '<button class="action-btn action-rm" onclick="event.stopPropagation();doRm(\'' + escapedPath + '\')">Delete</button>' +
+          '</div><span class="list-chevron">&#10095;</span></div>';
       } else {
-        nameHtml = '<span>' + icon + e.name + '</span>';
+        item.innerHTML =
+          '<div class="list-icon">&#128196;</div>' +
+          '<div class="list-content"><div class="list-title">' + e.name + '</div>' +
+          '<div class="list-detail">' + formatSize(e.size) + ' &middot; ' + e.time + '</div></div>' +
+          '<div class="list-accessory"><div class="list-actions">' +
+          '<button class="action-btn action-dl" onclick="event.stopPropagation();doDownload(\'' + escapedPath + '\')">Get</button>' +
+          '<button class="action-btn action-rm" onclick="event.stopPropagation();doRm(\'' + escapedPath + '\')">Del</button>' +
+          '</div></div>';
       }
 
-      let actions = '<button class="btn btn-danger" onclick="doRm(\'' + fullPath.replace(/'/g,"\\'") + '\')">Delete</button>';
-      if (!isDir) {
-        actions = '<button class="btn" onclick="doDownload(\'' + fullPath.replace(/'/g,"\\'") + '\')">Download</button>' + actions;
-      }
-
-      tr.innerHTML = '<td>' + nameHtml + '</td><td class="size">' + (isDir ? '-' : formatSize(e.size)) + '</td><td class="time">' + e.time + '</td><td class="actions">' + actions + '</td>';
-      tbody.appendChild(tr);
+      list.appendChild(item);
     });
   } catch(e) {
-    toast('Error: ' + e.message, true);
+    toast(e.message, true);
   }
 }
 
@@ -199,19 +266,22 @@ function doDownload(path) {
 }
 
 async function doRm(path) {
-  if (!confirm('Delete ' + path + '?')) return;
+  if (!confirm('Delete ' + path.split('/').pop() + '?')) return;
   try {
     await api('/api/rm?path=' + encodeURIComponent(path), {method:'POST'});
     toast('Deleted');
     refresh();
-  } catch(e) { toast('Error: ' + e.message, true); }
+  } catch(e) { toast(e.message, true); }
 }
 
-function showUpload() { document.getElementById('uploadArea').style.display = 'block'; }
+function showUpload() {
+  const area = document.getElementById('uploadArea');
+  area.style.display = area.style.display === 'none' ? '' : 'none';
+}
 
 function handleDrop(e) {
   e.preventDefault();
-  e.target.classList.remove('drag');
+  document.getElementById('uploadArea').classList.remove('drag');
   uploadFiles(e.dataTransfer.files);
 }
 
@@ -222,15 +292,17 @@ async function uploadFiles(files) {
     try {
       await api('/api/upload?path=' + encodeURIComponent(currentPath), {method:'POST', body: fd});
       toast('Uploaded: ' + file.name);
-    } catch(e) { toast('Upload error: ' + e.message, true); }
+    } catch(e) { toast('Upload failed', true); }
   }
+  document.getElementById('fileInput').value = '';
   refresh();
 }
 
 function showMkdir() {
   document.getElementById('mkdirModal').classList.add('show');
-  document.getElementById('mkdirName').value = '';
-  document.getElementById('mkdirName').focus();
+  const input = document.getElementById('mkdirName');
+  input.value = '';
+  setTimeout(() => input.focus(), 100);
 }
 
 function hideModal(id) { document.getElementById(id).classList.remove('show'); }
@@ -244,13 +316,13 @@ async function doMkdir() {
     toast('Folder created');
     hideModal('mkdirModal');
     refresh();
-  } catch(e) { toast('Error: ' + e.message, true); }
+  } catch(e) { toast(e.message, true); }
 }
 
 function toggleTerminal() {
   const t = document.getElementById('terminal');
   t.classList.toggle('show');
-  if (t.classList.contains('show')) document.getElementById('termInput').focus();
+  if (t.classList.contains('show')) setTimeout(() => document.getElementById('termInput').focus(), 100);
 }
 
 async function runCmd() {
@@ -260,7 +332,7 @@ async function runCmd() {
   input.value = '';
 
   const out = document.getElementById('termOutput');
-  out.innerHTML += '<div style="color:#58a6ff">$ ' + cmd.replace(/</g,'&lt;') + '</div>';
+  out.innerHTML += '<div class="cmd-line">$ ' + cmd.replace(/</g,'&lt;') + '</div>';
 
   try {
     const r = await api('/api/exec?cmd=' + encodeURIComponent(cmd), {method:'POST'});
@@ -269,14 +341,13 @@ async function runCmd() {
     const stderr = atob(data.stderr);
     if (stdout) out.innerHTML += '<div>' + stdout.replace(/</g,'&lt;') + '</div>';
     if (stderr) out.innerHTML += '<div class="stderr">' + stderr.replace(/</g,'&lt;') + '</div>';
-    if (data.exit_code !== 0) out.innerHTML += '<div class="stderr">exit code: ' + data.exit_code + '</div>';
+    if (data.exit_code !== 0) out.innerHTML += '<div class="stderr">exit ' + data.exit_code + '</div>';
   } catch(e) {
-    out.innerHTML += '<div class="stderr">Error: ' + e.message + '</div>';
+    out.innerHTML += '<div class="stderr">' + e.message + '</div>';
   }
   out.scrollTop = out.scrollHeight;
 }
 
-// Init
 loadDir('/');
 </script>
 </body>
