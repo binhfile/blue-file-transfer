@@ -398,6 +398,83 @@ func (c *Client) Exec(command string, stdoutWriter, stderrWriter io.Writer) (int
 	}
 }
 
+// Shell starts an interactive shell session on the server.
+// Stdin is forwarded to the remote shell, stdout/stderr are displayed locally.
+// Returns the shell exit code.
+func (c *Client) Shell(stdin io.Reader, stdout, stderr io.Writer) (int32, error) {
+	if err := protocol.WriteMessage(c.rw, protocol.MsgShell, protocol.FlagNone, nil); err != nil {
+		return -1, err
+	}
+
+	// Wait for OK (shell ready)
+	if err := c.expectOK(); err != nil {
+		return -1, err
+	}
+
+	done := make(chan int32, 1)
+
+	// Goroutine: read server output and display
+	go func() {
+		for {
+			msg, err := protocol.ReadMessage(c.rw)
+			if err != nil {
+				done <- -1
+				return
+			}
+
+			switch msg.Header.Type {
+			case protocol.MsgExecOutput:
+				out, err := protocol.DecodeExecOutputPayload(msg.Payload)
+				if err != nil {
+					continue
+				}
+				switch out.Stream {
+				case protocol.ExecStdout:
+					stdout.Write(out.Data)
+				case protocol.ExecStderr:
+					stderr.Write(out.Data)
+				}
+
+			case protocol.MsgExecExit:
+				exitPayload, _ := protocol.DecodeExecExitPayload(msg.Payload)
+				if exitPayload != nil {
+					done <- exitPayload.ExitCode
+				} else {
+					done <- 0
+				}
+				return
+
+			case protocol.MsgError:
+				ep, _ := protocol.DecodeErrorPayload(msg.Payload)
+				if ep != nil {
+					fmt.Fprintf(stderr, "Server error: %s\n", ep.Message)
+				}
+				done <- -1
+				return
+			}
+		}
+	}()
+
+	// Goroutine: read local stdin and send to server
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stdin.Read(buf)
+			if n > 0 {
+				protocol.WriteMessage(c.rw, protocol.MsgShellIn, protocol.FlagNone, buf[:n])
+			}
+			if err != nil {
+				// Send exit signal
+				protocol.WriteMessage(c.rw, protocol.MsgExecExit, protocol.FlagNone, nil)
+				return
+			}
+		}
+	}()
+
+	exitCode := <-done
+	return exitCode, nil
+}
+
 // Passwd changes the current user's password on the server.
 func (c *Client) Passwd(oldPassword, newPassword string) error {
 	payload := protocol.EncodeTwoStrings(oldPassword, newPassword)

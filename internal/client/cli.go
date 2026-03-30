@@ -85,6 +85,8 @@ func RunInteractiveCLI(c *Client) error {
 			handleCompress(c, cmdArgs)
 		case "exec", "!":
 			handleExec(c, line)
+		case "shell":
+			handleShell(c)
 		default:
 			fmt.Printf("Unknown command: %s (type 'help' for commands)\n", cmd)
 		}
@@ -111,6 +113,7 @@ func printHelp() {
   compress [on|off]             Toggle or set compression
   exec <command>               Execute command on server
   ! <command>                  Shortcut for exec
+  shell                        Interactive shell on server (like SSH)
   passwd                       Change password on server
   help                         Show this help
   exit                         Exit client`)
@@ -579,6 +582,36 @@ func handleExec(c *Client, line string) {
 	}
 	if exitCode != 0 {
 		fmt.Printf("Exit code: %d\n", exitCode)
+	}
+}
+
+func handleShell(c *Client) {
+	if !requireConnected(c) {
+		return
+	}
+
+	fmt.Println("Starting remote shell (Ctrl+D to exit)...")
+
+	// Enter raw terminal mode so keystrokes go directly to remote shell
+	rawState, err := enableRawMode()
+	if err != nil {
+		fmt.Printf("Warning: raw mode unavailable: %v\n", err)
+	}
+
+	exitCode, err := c.Shell(os.Stdin, os.Stdout, os.Stderr)
+
+	// Restore terminal BEFORE printing anything
+	if rawState != nil {
+		disableRawMode(rawState)
+	}
+
+	fmt.Println() // newline after shell output
+	if err != nil {
+		fmt.Printf("Shell error: %v\n", err)
+		return
+	}
+	if exitCode != 0 {
+		fmt.Printf("Shell exited with code %d\n", exitCode)
 	}
 }
 

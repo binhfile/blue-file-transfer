@@ -21,6 +21,8 @@ const (
 	MsgExec     uint8 = 0x0B // Remote command execution
 	MsgAuth     uint8 = 0x0C // Authentication (username + password)
 	MsgPasswd   uint8 = 0x0D // Change password
+	MsgShell    uint8 = 0x0E // Start interactive shell session
+	MsgShellIn  uint8 = 0x0F // Shell stdin (client -> server)
 
 	// Response types (server -> client)
 	MsgOK          uint8 = 0x80

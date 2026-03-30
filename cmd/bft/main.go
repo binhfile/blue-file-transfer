@@ -50,6 +50,8 @@ func main() {
 		runOneShot(args, "mv")
 	case "exec", "!":
 		runOneShot(args, "exec")
+	case "shell":
+		runOneShot(args, "shell")
 	case "pwd":
 		runOneShot(args, "pwd")
 	case "info":
@@ -89,6 +91,7 @@ One-shot commands (connect, run, exit):
   bft info  --server <addr> --path <target> [conn-options]
   bft pwd   --server <addr> [conn-options]
   bft exec  --server <addr> --cmd <command> [conn-options]
+  bft shell --server <addr> [conn-options]
 
 User management:
   bft useradd --users-file <path> --user <name> --pass <password>
@@ -448,6 +451,14 @@ func runOneShot(args []string, command string) {
 			os.Exit(1)
 		}
 		exitCode, err := c.Exec(cmdStr, os.Stdout, os.Stderr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(int(exitCode))
+
+	case "shell":
+		exitCode, err := c.Shell(os.Stdin, os.Stdout, os.Stderr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)

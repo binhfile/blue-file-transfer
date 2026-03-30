@@ -158,6 +158,10 @@ func (s *Server) handleConnection(conn bt.Conn) {
 		case protocol.MsgPasswd:
 			s.handlePasswd(rw, authUser, msg.Payload)
 
+		case protocol.MsgShell:
+			s.handleShell(rw, currentDir)
+			return // shell takes over the connection until exit
+
 		default:
 			s.sendError(rw, protocol.ErrCodeInvalidRequest, fmt.Sprintf("unknown message type: 0x%02X", msg.Header.Type))
 		}
@@ -625,6 +629,114 @@ func (s *Server) handleExec(conn io.Writer, currentDir string, payload []byte) {
 
 	exitPayload := &protocol.ExecExitPayload{ExitCode: exitCode}
 	protocol.WriteMessage(conn, protocol.MsgExecExit, protocol.FlagNone, exitPayload.Encode())
+}
+
+func (s *Server) handleShell(rw io.ReadWriter, currentDir string) {
+	if !s.AllowExec {
+		s.sendError(rw, protocol.ErrCodeExecDisabled, "remote execution is disabled")
+		return
+	}
+
+	// Determine shell
+	shell := "/bin/bash"
+	if _, err := os.Stat(shell); err != nil {
+		shell = "/bin/sh"
+	}
+	if runtime.GOOS == "windows" {
+		shell = "cmd.exe"
+	}
+
+	s.logger.Printf("Shell session started: %s (cwd: %s)", shell, currentDir)
+
+	cmd := exec.Command(shell)
+	cmd.Dir = currentDir
+	cmd.Env = append(os.Environ(), "TERM=xterm", "PS1=\\u@\\h:\\w\\$ ")
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		s.sendError(rw, protocol.ErrCodePermission, fmt.Sprintf("stdin pipe: %v", err))
+		return
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		s.sendError(rw, protocol.ErrCodePermission, fmt.Sprintf("stdout pipe: %v", err))
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		s.sendError(rw, protocol.ErrCodePermission, fmt.Sprintf("stderr pipe: %v", err))
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		s.sendError(rw, protocol.ErrCodePermission, fmt.Sprintf("start shell: %v", err))
+		return
+	}
+
+	// Signal client that shell is ready
+	s.sendOK(rw)
+
+	// Goroutine: read stdout and send to client
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	sendOutput := func(pipe io.ReadCloser, stream uint8) {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := pipe.Read(buf)
+			if n > 0 {
+				out := &protocol.ExecOutputPayload{Stream: stream, Data: buf[:n]}
+				if werr := protocol.WriteMessage(rw, protocol.MsgExecOutput, protocol.FlagNone, out.Encode()); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
+
+	go sendOutput(stdoutPipe, protocol.ExecStdout)
+	go sendOutput(stderrPipe, protocol.ExecStderr)
+
+	// Main loop: read client input (MsgShellIn) and write to shell stdin
+	go func() {
+		for {
+			msg, err := protocol.ReadMessage(rw)
+			if err != nil {
+				stdinPipe.Close()
+				cmd.Process.Kill()
+				return
+			}
+
+			switch msg.Header.Type {
+			case protocol.MsgShellIn:
+				if _, err := stdinPipe.Write(msg.Payload); err != nil {
+					return
+				}
+			case protocol.MsgExecExit:
+				// Client requested exit
+				stdinPipe.Close()
+				cmd.Process.Kill()
+				return
+			}
+		}
+	}()
+
+	// Wait for shell to exit
+	wg.Wait()
+
+	exitCode := int32(0)
+	if err := cmd.Wait(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = int32(exitErr.ExitCode())
+		}
+	}
+
+	exitPayload := &protocol.ExecExitPayload{ExitCode: exitCode}
+	protocol.WriteMessage(rw, protocol.MsgExecExit, protocol.FlagNone, exitPayload.Encode())
+	s.logger.Printf("Shell session ended (exit %d)", exitCode)
 }
 
 // receiveFileToPath receives a file to a specific path.
