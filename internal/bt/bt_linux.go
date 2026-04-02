@@ -19,6 +19,17 @@ const (
 	hciMaxDevices = 16
 	hciGetDevList = 0x800448D2 // HCIGETDEVLIST ioctl
 	hciGetDevInfo = 0x800448D3 // HCIGETDEVINFO ioctl
+	hciDevUp      = 0x400448C9 // HCIDEVUP ioctl
+	hciSetScan    = 0x400448DD // HCISETSCAN ioctl
+
+	// HCI device flags (from hci.h)
+	hciFlagUp    = 1 << 0
+	hciFlagPScan = 1 << 3
+	hciFlagIScan = 1 << 4
+
+	// Scan types
+	scanPage    = 0x02
+	scanInquiry = 0x01
 
 	sockBufSize = 65536
 )
@@ -107,6 +118,83 @@ func resolveAdapter(adapter string) ([6]byte, error) {
 	return di.BDAddr, nil
 }
 
+// ensureAdapterUp brings the adapter up and enables page+inquiry scan (piscan)
+// if not already set. Adapter should be in "hciN" format.
+func ensureAdapterUp(adapter string) error {
+	if adapter == "" || adapter == "any" {
+		return nil
+	}
+	if !strings.HasPrefix(adapter, "hci") {
+		return nil // raw address, can't manage
+	}
+
+	devID, err := strconv.Atoi(adapter[3:])
+	if err != nil {
+		return fmt.Errorf("invalid adapter name: %s", adapter)
+	}
+
+	fd, err := unix.Socket(unix.AF_BLUETOOTH, unix.SOCK_RAW, unix.BTPROTO_HCI)
+	if err != nil {
+		return fmt.Errorf("open HCI socket: %w", err)
+	}
+	defer unix.Close(fd)
+
+	// Get current device info
+	type hciDevInfo struct {
+		DevID uint16
+		Name  [8]byte
+		BDAddr [6]byte
+		Flags uint32
+		Type  uint8
+		_     [3]byte
+		_     [4]uint32
+		_     [10]uint32
+		_     [4]uint32
+		_     [4]uint16
+		_     [2]uint32
+		_     [3]uint16
+	}
+
+	var di hciDevInfo
+	di.DevID = uint16(devID)
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(hciGetDevInfo), uintptr(unsafe.Pointer(&di)))
+	if errno != 0 {
+		return fmt.Errorf("HCIGETDEVINFO: %w", errno)
+	}
+
+	// Bring up if not already up
+	if di.Flags&hciFlagUp == 0 {
+		_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(hciDevUp), uintptr(devID))
+		if errno != 0 {
+			return fmt.Errorf("HCIDEVUP: %w", errno)
+		}
+		// Re-read flags after bringing up
+		di.DevID = uint16(devID)
+		_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(hciGetDevInfo), uintptr(unsafe.Pointer(&di)))
+		if errno != 0 {
+			return fmt.Errorf("HCIGETDEVINFO after up: %w", errno)
+		}
+	}
+
+	// Enable piscan if not already set
+	if di.Flags&hciFlagPScan == 0 || di.Flags&hciFlagIScan == 0 {
+		type hciDevReq struct {
+			DevID  uint16
+			DevOpt uint32
+		}
+		dr := hciDevReq{
+			DevID:  uint16(devID),
+			DevOpt: uint32(scanPage | scanInquiry),
+		}
+		_, _, errno = unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(hciSetScan), uintptr(unsafe.Pointer(&dr)))
+		if errno != 0 {
+			return fmt.Errorf("HCISETSCAN piscan: %w", errno)
+		}
+	}
+
+	return nil
+}
+
 type rfcommConn struct {
 	fd         int
 	remoteAddr string
@@ -192,6 +280,10 @@ func (l *rfcommListener) Addr() string {
 }
 
 func (t *LinuxTransport) Listen(adapter string, channel uint8) (Listener, error) {
+	if err := ensureAdapterUp(adapter); err != nil {
+		return nil, fmt.Errorf("ensure adapter ready: %w", err)
+	}
+
 	adapterAddr, err := resolveAdapter(adapter)
 	if err != nil {
 		return nil, fmt.Errorf("resolve adapter: %w", err)
@@ -227,6 +319,10 @@ func (t *LinuxTransport) Listen(adapter string, channel uint8) (Listener, error)
 }
 
 func (t *LinuxTransport) Connect(adapter string, remoteAddr string, channel uint8) (Conn, error) {
+	if err := ensureAdapterUp(adapter); err != nil {
+		return nil, fmt.Errorf("ensure adapter ready: %w", err)
+	}
+
 	adapterAddr, err := resolveAdapter(adapter)
 	if err != nil {
 		return nil, fmt.Errorf("resolve adapter: %w", err)

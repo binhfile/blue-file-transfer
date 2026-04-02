@@ -117,6 +117,14 @@ body { font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica N
 .transfer-stats { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; color: var(--label-secondary); font-variant-numeric: tabular-nums; }
 .transfer-stats span { display: flex; align-items: center; gap: 3px; }
 
+/* Connection status bar */
+.conn-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: var(--bg-secondary); border-bottom: 0.5px solid var(--separator); }
+.conn-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; transition: background 0.3s; }
+.conn-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.conn-dot.off { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.conn-text { font-size: 13px; color: var(--label-secondary); flex: 1; }
+.conn-addr { font-family: 'SF Mono', monospace; color: var(--label); }
+
 /* Empty state */
 .empty { text-align: center; padding: 48px 16px; color: var(--label-secondary); }
 .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
@@ -136,6 +144,12 @@ body { font-family: -apple-system, 'SF Pro Display', 'SF Pro Text', 'Helvetica N
 <div class="nav-bar">
   <div class="nav-title">Bluetooth File Transfer</div>
   <div class="nav-subtitle" id="pathBar">/</div>
+</div>
+
+<div class="conn-bar" id="connBar">
+  <span class="conn-dot on" id="connDot"></span>
+  <span class="conn-text" id="connText">Checking...</span>
+  <button class="pill" id="connBtn" onclick="toggleConnection()" style="margin-left:auto;font-size:13px;padding:5px 14px;">&#8230;</button>
 </div>
 
 <div class="toolbar">
@@ -558,6 +572,62 @@ async function runCmd() {
   }
   out.scrollTop = out.scrollHeight;
 }
+
+// --- Connection status ---
+let btConnected = true;
+let btServer = '';
+
+async function checkStatus() {
+  try {
+    const r = await fetch('/api/status');
+    if (!r.ok) return;
+    const d = await r.json();
+    btConnected = d.connected;
+    btServer = d.server || '';
+    updateConnUI();
+  } catch(e) {}
+}
+
+function updateConnUI() {
+  const dot = document.getElementById('connDot');
+  const text = document.getElementById('connText');
+  const btn = document.getElementById('connBtn');
+  if (btConnected) {
+    dot.className = 'conn-dot on';
+    text.innerHTML = 'Connected' + (btServer ? ' &mdash; <span class="conn-addr">' + btServer + '</span>' : '');
+    btn.textContent = 'Disconnect';
+    btn.className = 'pill';
+  } else {
+    dot.className = 'conn-dot off';
+    text.textContent = 'Disconnected';
+    btn.textContent = 'Connect';
+    btn.className = 'pill blue';
+  }
+}
+
+async function toggleConnection() {
+  const btn = document.getElementById('connBtn');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    if (btConnected) {
+      await fetch('/api/disconnect', {method:'POST'});
+      toast('Disconnected');
+    } else {
+      const r = await fetch('/api/connect', {method:'POST'});
+      if (!r.ok) { const t = await r.text(); throw new Error(t); }
+      toast('Connected');
+    }
+  } catch(e) {
+    toast(e.message, true);
+  }
+  btn.disabled = false;
+  await checkStatus();
+  if (btConnected) refresh();
+}
+
+checkStatus();
+setInterval(checkStatus, 5000);
 
 loadDir('/');
 </script>

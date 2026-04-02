@@ -91,6 +91,22 @@ func RecvChunk(msg *protocol.Message) ([]byte, uint64, error) {
 	return chunk.Data, chunk.Offset, nil
 }
 
+// drainFileChunks reads and discards messages until MsgTransferEnd, MsgError,
+// or a read error. Used to resync the stream after a file receive error within
+// a directory transfer, so the receiver can continue to the next file.
+func drainFileChunks(r io.Reader) {
+	for {
+		msg, err := protocol.ReadMessage(r)
+		if err != nil {
+			return
+		}
+		switch msg.Header.Type {
+		case protocol.MsgTransferEnd, protocol.MsgError:
+			return
+		}
+	}
+}
+
 // --- File transfer ---
 
 // SendFile sends a file over a connection using chunked transfer.
@@ -193,21 +209,30 @@ func ReceiveFile(r io.Reader, destDir string, progressFn ProgressFunc) (string, 
 
 	var totalCRC uint32
 	var bytesReceived int64
+	var recvErr error // set on first local error; triggers drain mode
 
 	for {
 		msg, err := protocol.ReadMessage(r)
 		if err != nil {
+			if recvErr != nil {
+				return "", recvErr
+			}
 			return "", fmt.Errorf("read message: %w", err)
 		}
 
 		switch msg.Header.Type {
 		case protocol.MsgDataChunk:
+			if recvErr != nil {
+				continue // drain remaining chunks
+			}
 			data, _, err := RecvChunk(msg)
 			if err != nil {
-				return "", err
+				recvErr = err
+				continue
 			}
 			if _, err := f.Write(data); err != nil {
-				return "", fmt.Errorf("write chunk: %w", err)
+				recvErr = fmt.Errorf("write chunk: %w", err)
+				continue
 			}
 			totalCRC = CRC32Update(totalCRC, data)
 			bytesReceived += int64(len(data))
@@ -216,6 +241,9 @@ func ReceiveFile(r io.Reader, destDir string, progressFn ProgressFunc) (string, 
 			}
 
 		case protocol.MsgTransferEnd:
+			if recvErr != nil {
+				return "", recvErr
+			}
 			endPayload, err := protocol.DecodeTransferEndPayload(msg.Payload)
 			if err != nil {
 				return "", fmt.Errorf("decode transfer end: %w", err)
@@ -233,6 +261,9 @@ func ReceiveFile(r io.Reader, destDir string, progressFn ProgressFunc) (string, 
 			return "", fmt.Errorf("server error (unparseable)")
 
 		default:
+			if recvErr != nil {
+				continue // drain mode: skip unexpected messages
+			}
 			return "", fmt.Errorf("unexpected message type 0x%02X during transfer", msg.Header.Type)
 		}
 	}
@@ -317,76 +348,115 @@ func SendDir(w io.Writer, dirPath string, chunkSize int, compress bool, progress
 // ReceiveDir receives a directory from a connection.
 // Automatically handles both compressed and uncompressed chunks.
 // The stream ends with MsgOK.
+// On local errors (CRC mismatch, disk write), it drains remaining messages
+// to keep the protocol stream synchronized for subsequent commands.
 func ReceiveDir(r io.Reader, destDir string, progressFn ProgressFunc) error {
+	var dirErr error // first error; triggers drain mode for remaining files
+
 	for {
 		msg, err := protocol.ReadMessage(r)
 		if err != nil {
+			if dirErr != nil {
+				return dirErr
+			}
 			return fmt.Errorf("read message: %w", err)
 		}
 
 		switch msg.Header.Type {
 		case protocol.MsgOK:
-			return nil
+			return dirErr // nil on success
 
 		case protocol.MsgFileInfo:
 			fileInfo, _, err := protocol.DecodeFileInfoPayload(msg.Payload, 0)
 			if err != nil {
-				return fmt.Errorf("decode file info: %w", err)
+				if dirErr == nil {
+					dirErr = fmt.Errorf("decode file info: %w", err)
+				}
+				continue
 			}
 
 			fullPath := filepath.Join(destDir, fileInfo.Name)
 
 			if fileInfo.EntryType == protocol.EntryDir {
-				if err := os.MkdirAll(fullPath, os.FileMode(fileInfo.Mode)); err != nil {
-					return fmt.Errorf("create dir %s: %w", fileInfo.Name, err)
+				if dirErr == nil {
+					if err := os.MkdirAll(fullPath, os.FileMode(fileInfo.Mode)); err != nil {
+						dirErr = fmt.Errorf("create dir %s: %w", fileInfo.Name, err)
+					}
 				}
+				continue
+			}
+
+			// File entry: receive chunks until TransferEnd
+			if dirErr != nil {
+				// Already failed — drain this file's chunks
+				drainFileChunks(r)
 				continue
 			}
 
 			parentDir := filepath.Dir(fullPath)
 			if err := os.MkdirAll(parentDir, 0755); err != nil {
-				return fmt.Errorf("create parent dir: %w", err)
+				dirErr = fmt.Errorf("create parent dir: %w", err)
+				drainFileChunks(r)
+				continue
 			}
 
 			f, err := os.OpenFile(fullPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(fileInfo.Mode))
 			if err != nil {
-				return fmt.Errorf("create file %s: %w", fileInfo.Name, err)
+				dirErr = fmt.Errorf("create file %s: %w", fileInfo.Name, err)
+				drainFileChunks(r)
+				continue
 			}
 
 			var totalCRC uint32
+			var fileErr error
 			fileComplete := false
 
 			for !fileComplete {
 				chunkMsg, err := protocol.ReadMessage(r)
 				if err != nil {
 					f.Close()
+					if dirErr != nil {
+						return dirErr
+					}
 					return fmt.Errorf("read chunk for %s: %w", fileInfo.Name, err)
 				}
 
 				switch chunkMsg.Header.Type {
 				case protocol.MsgDataChunk:
+					if fileErr != nil {
+						continue // drain remaining chunks for this file
+					}
 					data, _, err := RecvChunk(chunkMsg)
 					if err != nil {
-						f.Close()
-						return err
+						fileErr = err
+						continue
 					}
 					if _, err := f.Write(data); err != nil {
-						f.Close()
-						return fmt.Errorf("write %s: %w", fileInfo.Name, err)
+						fileErr = fmt.Errorf("write %s: %w", fileInfo.Name, err)
+						continue
 					}
 					totalCRC = CRC32Update(totalCRC, data)
 
 				case protocol.MsgTransferEnd:
-					endPayload, err := protocol.DecodeTransferEndPayload(chunkMsg.Payload)
-					if err != nil {
-						f.Close()
-						return fmt.Errorf("decode transfer end: %w", err)
-					}
-					if endPayload.TotalCRC32 != totalCRC {
-						f.Close()
-						return fmt.Errorf("CRC mismatch for %s", fileInfo.Name)
+					if fileErr != nil {
+						dirErr = fileErr
+					} else {
+						endPayload, err := protocol.DecodeTransferEndPayload(chunkMsg.Payload)
+						if err != nil {
+							dirErr = fmt.Errorf("decode transfer end: %w", err)
+						} else if endPayload.TotalCRC32 != totalCRC {
+							dirErr = fmt.Errorf("CRC mismatch for %s", fileInfo.Name)
+						}
 					}
 					fileComplete = true
+
+				case protocol.MsgError:
+					f.Close()
+					errPayload, _ := protocol.DecodeErrorPayload(chunkMsg.Payload)
+					if errPayload != nil {
+						return fmt.Errorf("remote error: [%d] %s", errPayload.Code, errPayload.Message)
+					}
+					return fmt.Errorf("remote error")
 				}
 			}
 			f.Close()
@@ -399,6 +469,9 @@ func ReceiveDir(r io.Reader, destDir string, progressFn ProgressFunc) error {
 			return fmt.Errorf("server error")
 
 		default:
+			if dirErr != nil {
+				continue // drain mode: skip unexpected messages
+			}
 			return fmt.Errorf("unexpected message type 0x%02X", msg.Header.Type)
 		}
 	}

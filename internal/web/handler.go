@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"blue-file-transfer/internal/protocol"
@@ -26,23 +27,31 @@ type BFTClient interface {
 	Mkdir(path string) error
 	Delete(path string) error
 	Exec(command string, stdout, stderr io.Writer) (int32, error)
+	IsConnected() bool
+	Connect(remoteAddr string, channel uint8) error
+	Disconnect() error
 }
 
 // Server serves the web GUI and proxies file operations to the BFT client.
 type Server struct {
-	client   BFTClient
-	username string
-	password string
-	logger   *log.Logger
+	client     BFTClient
+	username   string
+	password   string
+	serverAddr string // BT server address for reconnection
+	channel    uint8  // BT channel for reconnection
+	btMu       sync.Mutex
+	logger     *log.Logger
 }
 
 // New creates a new web server.
-func New(c BFTClient, username, password string) *Server {
+func New(c BFTClient, username, password, serverAddr string, channel uint8) *Server {
 	return &Server{
-		client:   c,
-		username: username,
-		password: password,
-		logger:   log.New(os.Stderr, "[web] ", log.LstdFlags),
+		client:     c,
+		username:   username,
+		password:   password,
+		serverAddr: serverAddr,
+		channel:    channel,
+		logger:     log.New(os.Stderr, "[web] ", log.LstdFlags),
 	}
 }
 
@@ -56,6 +65,9 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("/api/mkdir", s.auth(s.handleMkdir))
 	mux.HandleFunc("/api/rm", s.auth(s.handleRm))
 	mux.HandleFunc("/api/exec", s.auth(s.handleExec))
+	mux.HandleFunc("/api/status", s.auth(s.handleStatus))
+	mux.HandleFunc("/api/connect", s.auth(s.handleConnect))
+	mux.HandleFunc("/api/disconnect", s.auth(s.handleDisconnect))
 
 	s.logger.Printf("Web GUI listening on http://%s", addr)
 	return http.ListenAndServe(addr, mux)
@@ -88,7 +100,9 @@ func (s *Server) handleLS(w http.ResponseWriter, r *http.Request) {
 		path = "/"
 	}
 
+	s.btMu.Lock()
 	listing, err := s.client.ListDir(toRelative(path))
+	s.btMu.Unlock()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -137,7 +151,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	s.btMu.Lock()
 	result, err := s.client.Download(toRelative(path), tmpDir, nil)
+	s.btMu.Unlock()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -241,8 +257,11 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		remoteFile = remotePath + "/" + filename
 	}
 
-	if err := s.client.Upload(tmpPath, toRelative(remoteFile), nil); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	s.btMu.Lock()
+	uploadErr := s.client.Upload(tmpPath, toRelative(remoteFile), nil)
+	s.btMu.Unlock()
+	if uploadErr != nil {
+		http.Error(w, uploadErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -260,7 +279,10 @@ func (s *Server) handleMkdir(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
-	if err := s.client.Mkdir(toRelative(path)); err != nil {
+	s.btMu.Lock()
+	err := s.client.Mkdir(toRelative(path))
+	s.btMu.Unlock()
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -278,7 +300,10 @@ func (s *Server) handleRm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
-	if err := s.client.Delete(toRelative(path)); err != nil {
+	s.btMu.Lock()
+	err := s.client.Delete(toRelative(path))
+	s.btMu.Unlock()
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -298,7 +323,9 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var stdout, stderr strings.Builder
+	s.btMu.Lock()
 	exitCode, err := s.client.Exec(cmd, &stdout, &stderr)
+	s.btMu.Unlock()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -309,4 +336,50 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"exit_code":%d,"stdout":"%s","stderr":"%s"}`, exitCode, stdoutB64, stderrB64)
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	connected := s.client.IsConnected()
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"connected":%t,"server":%q,"channel":%d}`, connected, s.serverAddr, s.channel)
+}
+
+func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	s.btMu.Lock()
+	defer s.btMu.Unlock()
+
+	if s.client.IsConnected() {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"message":"already connected"}`))
+		return
+	}
+
+	if err := s.client.Connect(s.serverAddr, s.channel); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.logger.Printf("Connected to %s channel %d", s.serverAddr, s.channel)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
+}
+
+func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	s.btMu.Lock()
+	defer s.btMu.Unlock()
+
+	if err := s.client.Disconnect(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.logger.Printf("Disconnected from %s", s.serverAddr)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"ok":true}`))
 }

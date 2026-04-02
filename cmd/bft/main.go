@@ -109,6 +109,7 @@ Server options:
   --rfcomm             Use RFCOMM transport (default: L2CAP)
   --no-exec            Disable remote command execution (enabled by default)
   --users-file <path>  Users file for authentication (default: none, no auth)
+  --max-clients <n>    Max concurrent connections; oldest dropped when exceeded
 
 Connection options (client, one-shot, benchmark):
   --adapter <hci>      Bluetooth adapter (default: hci0)
@@ -175,6 +176,14 @@ func runServer(args []string) {
 		usersFile = v
 	}
 
+	maxClients := 0
+	if v, ok := flags["max-clients"]; ok {
+		mc, err := strconv.Atoi(v)
+		if err == nil && mc > 0 {
+			maxClients = mc
+		}
+	}
+
 	transport, proto := getTransport(flags)
 	srv, err := server.New(transport, dir, adapter, channel)
 	if err != nil {
@@ -182,6 +191,7 @@ func runServer(args []string) {
 		os.Exit(1)
 	}
 	srv.AllowExec = allowExec
+	srv.MaxClients = maxClients
 
 	if usersFile != "" {
 		users, err := auth.NewUserStore(usersFile)
@@ -200,7 +210,11 @@ func runServer(args []string) {
 	if allowExec {
 		execStr = ", exec: ENABLED"
 	}
-	fmt.Printf("Starting BFT server [%s] on %s channel %d, serving: %s%s%s\n", proto, adapter, channel, dir, authStr, execStr)
+	maxStr := ""
+	if maxClients > 0 {
+		maxStr = fmt.Sprintf(", max-clients: %d", maxClients)
+	}
+	fmt.Printf("Starting BFT server [%s] on %s channel %d, serving: %s%s%s%s\n", proto, adapter, channel, dir, authStr, execStr, maxStr)
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -476,6 +490,15 @@ func runWeb(args []string) {
 	c := connectOneShot(flags)
 	// Don't defer Disconnect — web server runs until killed
 
+	serverAddr := flags["server"]
+	webChannel := uint8(1)
+	if v, ok := flags["channel"]; ok {
+		ch, _ := strconv.Atoi(v)
+		if ch > 0 && ch < 31 {
+			webChannel = uint8(ch)
+		}
+	}
+
 	port := "8080"
 	if v, ok := flags["port"]; ok {
 		port = v
@@ -492,7 +515,7 @@ func runWeb(args []string) {
 	addr := "0.0.0.0:" + port
 	fmt.Printf("Web GUI: http://0.0.0.0:%s (user: %s)\n", port, webUser)
 
-	webSrv := web.New(c, webUser, webPass)
+	webSrv := web.New(c, webUser, webPass, serverAddr, webChannel)
 	if err := webSrv.ListenAndServe(addr); err != nil {
 		fmt.Fprintf(os.Stderr, "Web error: %v\n", err)
 		os.Exit(1)

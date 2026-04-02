@@ -268,21 +268,31 @@ func (c *Client) Download(remotePath, localDir string, progressFn transfer.Progr
 		totalSize := int64(fileInfo.Size)
 		var totalCRC uint32
 		var bytesReceived int64
+		var recvErr error // set on first local error; triggers drain mode
 
 		for {
 			chunkMsg, err := protocol.ReadMessage(c.rw)
 			if err != nil {
+				if recvErr != nil {
+					os.Remove(destPath)
+					return "", recvErr
+				}
 				return "", err
 			}
 
 			switch chunkMsg.Header.Type {
 			case protocol.MsgDataChunk:
+				if recvErr != nil {
+					continue // drain remaining chunks
+				}
 				data, _, err := transfer.RecvChunk(chunkMsg)
 				if err != nil {
-					return "", err
+					recvErr = err
+					continue
 				}
 				if _, err := f.Write(data); err != nil {
-					return "", err
+					recvErr = err
+					continue
 				}
 				totalCRC = transfer.CRC32Update(totalCRC, data)
 				bytesReceived += int64(len(data))
@@ -291,16 +301,23 @@ func (c *Client) Download(remotePath, localDir string, progressFn transfer.Progr
 				}
 
 			case protocol.MsgTransferEnd:
+				if recvErr != nil {
+					os.Remove(destPath)
+					return "", recvErr
+				}
 				endPayload, err := protocol.DecodeTransferEndPayload(chunkMsg.Payload)
 				if err != nil {
+					os.Remove(destPath)
 					return "", err
 				}
 				if endPayload.TotalCRC32 != totalCRC {
+					os.Remove(destPath)
 					return "", fmt.Errorf("total CRC mismatch")
 				}
 				return destPath, nil
 
 			case protocol.MsgError:
+				os.Remove(destPath)
 				return "", decodeError(chunkMsg)
 			}
 		}
@@ -341,11 +358,22 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 
 	if isDir {
 		if err := transfer.SendDir(c.rw, localPath, transfer.DefaultChunkSize, c.Compress, progressFn); err != nil {
+			// Send TransferEnd (to close any incomplete file) + MsgOK (to end directory)
+			// so the server's ReceiveDir can drain and respond with an error.
+			endPayload := &protocol.TransferEndPayload{TotalCRC32: 0}
+			protocol.WriteMessage(c.rw, protocol.MsgTransferEnd, protocol.FlagNone, endPayload.Encode())
+			protocol.WriteMessage(c.rw, protocol.MsgOK, protocol.FlagNone, nil)
+			c.expectOK() // read server's error response to resync
 			return err
 		}
 		protocol.WriteMessage(c.rw, protocol.MsgOK, protocol.FlagNone, nil)
 	} else {
 		if err := transfer.SendFile(c.rw, localPath, transfer.DefaultChunkSize, c.Compress, progressFn); err != nil {
+			// Send TransferEnd to unblock server's receive loop.
+			// CRC will mismatch — server will respond with error, keeping stream in sync.
+			endPayload := &protocol.TransferEndPayload{TotalCRC32: 0}
+			protocol.WriteMessage(c.rw, protocol.MsgTransferEnd, protocol.FlagNone, endPayload.Encode())
+			c.expectOK() // read server's error response to resync
 			return err
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"blue-file-transfer/internal/auth"
 	"blue-file-transfer/internal/bt"
@@ -20,13 +21,22 @@ import (
 
 // Server handles incoming Bluetooth file transfer connections.
 type Server struct {
-	transport bt.Transport
-	rootDir   string
-	adapter   string
-	channel   uint8
-	AllowExec bool
-	Users     *auth.UserStore
-	logger    *log.Logger
+	transport  bt.Transport
+	rootDir    string
+	adapter    string
+	channel    uint8
+	AllowExec  bool
+	Users      *auth.UserStore
+	MaxClients int // max concurrent connections; 0 = unlimited
+	logger     *log.Logger
+
+	mu          sync.Mutex
+	activeConns []trackedConn
+}
+
+type trackedConn struct {
+	conn      bt.Conn
+	startTime time.Time
 }
 
 // New creates a new Server.
@@ -60,7 +70,11 @@ func (s *Server) ListenAndServe() error {
 	}
 	defer listener.Close()
 
-	s.logger.Printf("Listening on %s channel %d, serving: %s", listener.Addr(), s.channel, s.rootDir)
+	maxStr := "unlimited"
+	if s.MaxClients > 0 {
+		maxStr = fmt.Sprintf("%d", s.MaxClients)
+	}
+	s.logger.Printf("Listening on %s channel %d, serving: %s (max clients: %s)", listener.Addr(), s.channel, s.rootDir, maxStr)
 
 	for {
 		conn, err := listener.Accept()
@@ -69,14 +83,47 @@ func (s *Server) ListenAndServe() error {
 			continue
 		}
 		s.logger.Printf("Client connected: %s", conn.RemoteAddr())
-		s.handleConnection(conn)
-		s.logger.Printf("Client disconnected: %s", conn.RemoteAddr())
+		s.trackConn(conn)
+		go func(c bt.Conn) {
+			defer s.untrackConn(c)
+			s.handleConnection(c)
+			s.logger.Printf("Client disconnected: %s", c.RemoteAddr())
+		}(conn)
 	}
 }
 
 // ServeConn handles a single client connection. Exported for testing.
 func (s *Server) ServeConn(conn bt.Conn) {
 	s.handleConnection(conn)
+}
+
+func (s *Server) trackConn(conn bt.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.MaxClients > 0 && len(s.activeConns) >= s.MaxClients {
+		oldest := s.activeConns[0]
+		s.logger.Printf("Connection limit (%d) reached, dropping oldest: %s",
+			s.MaxClients, oldest.conn.RemoteAddr())
+		oldest.conn.Close()
+		s.activeConns = s.activeConns[1:]
+	}
+
+	s.activeConns = append(s.activeConns, trackedConn{
+		conn:      conn,
+		startTime: time.Now(),
+	})
+}
+
+func (s *Server) untrackConn(conn bt.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, c := range s.activeConns {
+		if c.conn == conn {
+			s.activeConns = append(s.activeConns[:i], s.activeConns[i+1:]...)
+			return
+		}
+	}
 }
 
 func (s *Server) handleConnection(conn bt.Conn) {
@@ -436,12 +483,16 @@ func (s *Server) handleDownload(conn io.Writer, currentDir string, payload []byt
 	if info.IsDir() {
 		if err := transfer.SendDir(conn, safePath, transfer.DefaultChunkSize, compress, nil); err != nil {
 			s.logger.Printf("SendDir error: %v", err)
+			// Send error to unblock client's receive loop (may fail if connection is dead)
+			s.sendError(conn, protocol.ErrCodeInterrupted, fmt.Sprintf("download failed: %v", err))
 			return
 		}
 		s.sendOK(conn)
 	} else {
 		if err := transfer.SendFile(conn, safePath, transfer.DefaultChunkSize, compress, nil); err != nil {
 			s.logger.Printf("SendFile error: %v", err)
+			// Send error to unblock client's receive loop (may fail if connection is dead)
+			s.sendError(conn, protocol.ErrCodeInterrupted, fmt.Sprintf("download failed: %v", err))
 			return
 		}
 	}
@@ -466,6 +517,9 @@ func (s *Server) handleUpload(conn io.ReadWriter, currentDir string, payload []b
 	if req.IsDir {
 		if err := transfer.ReceiveDir(conn, safePath, nil); err != nil {
 			s.logger.Printf("ReceiveDir error: %v", err)
+			// ReceiveDir drains internally until MsgOK on error,
+			// so the stream is synced. Send error instead of OK.
+			s.sendError(conn, protocol.ErrCodeInterrupted, fmt.Sprintf("upload failed: %v", err))
 			return
 		}
 	} else {
@@ -476,6 +530,11 @@ func (s *Server) handleUpload(conn io.ReadWriter, currentDir string, payload []b
 		}
 		if err := receiveFileToPath(conn, safePath); err != nil {
 			s.logger.Printf("ReceiveFile error: %v", err)
+			// receiveFileToPath drains internally until TransferEnd on error,
+			// so the stream is synced. Send error instead of OK.
+			s.sendError(conn, protocol.ErrCodeInterrupted, fmt.Sprintf("upload failed: %v", err))
+			// Clean up partial file
+			os.Remove(safePath)
 			return
 		}
 		// Log received file size
@@ -745,6 +804,8 @@ func (s *Server) handleShell(rw io.ReadWriter, currentDir string) {
 
 // receiveFileToPath receives a file to a specific path.
 // Automatically handles compressed and uncompressed chunks.
+// On local errors (CRC mismatch, disk write), it drains remaining chunks
+// until TransferEnd to keep the protocol stream synchronized.
 func receiveFileToPath(r io.Reader, destPath string) error {
 	msg, err := protocol.ReadMessage(r)
 	if err != nil {
@@ -766,25 +827,37 @@ func receiveFileToPath(r io.Reader, destPath string) error {
 	defer f.Close()
 
 	var totalCRC uint32
+	var recvErr error // set on first local error; triggers drain mode
 
 	for {
 		msg, err := protocol.ReadMessage(r)
 		if err != nil {
+			if recvErr != nil {
+				return recvErr
+			}
 			return fmt.Errorf("read message: %w", err)
 		}
 
 		switch msg.Header.Type {
 		case protocol.MsgDataChunk:
+			if recvErr != nil {
+				continue // drain remaining chunks
+			}
 			data, _, err := transfer.RecvChunk(msg)
 			if err != nil {
-				return err
+				recvErr = err
+				continue
 			}
 			if _, err := f.Write(data); err != nil {
-				return fmt.Errorf("write: %w", err)
+				recvErr = fmt.Errorf("write: %w", err)
+				continue
 			}
 			totalCRC = transfer.CRC32Update(totalCRC, data)
 
 		case protocol.MsgTransferEnd:
+			if recvErr != nil {
+				return recvErr
+			}
 			endPayload, err := protocol.DecodeTransferEndPayload(msg.Payload)
 			if err != nil {
 				return fmt.Errorf("decode transfer end: %w", err)
@@ -793,6 +866,13 @@ func receiveFileToPath(r io.Reader, destPath string) error {
 				return fmt.Errorf("total CRC mismatch")
 			}
 			return nil
+
+		case protocol.MsgError:
+			errPayload, _ := protocol.DecodeErrorPayload(msg.Payload)
+			if errPayload != nil {
+				return fmt.Errorf("remote error: [%d] %s", errPayload.Code, errPayload.Message)
+			}
+			return fmt.Errorf("remote error")
 		}
 	}
 }

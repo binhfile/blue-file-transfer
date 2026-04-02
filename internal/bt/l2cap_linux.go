@@ -250,6 +250,10 @@ func (l *l2capListener) Addr() string {
 // --- Transport methods ---
 
 func (t *L2CAPTransport) Listen(adapter string, channel uint8) (Listener, error) {
+	if err := ensureAdapterUp(adapter); err != nil {
+		return nil, fmt.Errorf("ensure adapter ready: %w", err)
+	}
+
 	adapterAddr, err := resolveAdapterL2CAP(adapter)
 	if err != nil {
 		return nil, fmt.Errorf("resolve adapter: %w", err)
@@ -297,6 +301,10 @@ func (t *L2CAPTransport) Listen(adapter string, channel uint8) (Listener, error)
 }
 
 func (t *L2CAPTransport) Connect(adapter string, remoteAddr string, channel uint8) (Conn, error) {
+	if err := ensureAdapterUp(adapter); err != nil {
+		return nil, fmt.Errorf("ensure adapter ready: %w", err)
+	}
+
 	adapterAddr, err := resolveAdapterL2CAP(adapter)
 	if err != nil {
 		return nil, fmt.Errorf("resolve adapter: %w", err)
