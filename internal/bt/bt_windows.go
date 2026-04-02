@@ -469,5 +469,12 @@ func ListAdapters() ([]string, error) {
 	return []string{"default"}, nil
 }
 
+// ReadACLInfo returns the ACL MTU and buffer count from the adapter.
+// On Windows, this information is not directly available; returns zeros
+// so the caller falls back to defaults.
+func ReadACLInfo(adapter string) (aclMTU, aclPkts uint16, err error) {
+	return 0, 0, nil
+}
+
 // Ensure net is used
 var _ = net.Dial

@@ -129,16 +129,34 @@ func (s *Server) untrackConn(conn bt.Conn) {
 func (s *Server) handleConnection(conn bt.Conn) {
 	defer conn.Close()
 
+	chunkSize := transfer.DefaultChunkSize
+
+	// Read first message — may be MsgMTU (negotiation) or MsgAuth or a command
+	firstMsg, err := protocol.ReadMessage(conn)
+	if err != nil {
+		if err != io.EOF {
+			s.logger.Printf("Read error: %v", err)
+		}
+		return
+	}
+
+	// Optional MTU negotiation (client sends MsgMTU as first message)
+	if firstMsg.Header.Type == protocol.MsgMTU {
+		chunkSize = s.negotiateMTU(conn, firstMsg)
+		firstMsg = nil
+	}
+
 	// Authentication handshake (if users are configured)
 	var authUser string
 	var authPassword string
 	if s.Users != nil && s.Users.HasUsers() {
-		user, pass, ok := s.authenticate(conn)
+		user, pass, ok := s.authenticateMsg(conn, firstMsg)
 		if !ok {
 			return
 		}
 		authUser = user
 		authPassword = pass
+		firstMsg = nil
 		s.logger.Printf("Authenticated: %s", authUser)
 	}
 
@@ -157,12 +175,18 @@ func (s *Server) handleConnection(conn bt.Conn) {
 	currentDir := s.rootDir
 
 	for {
-		msg, err := protocol.ReadMessage(rw)
-		if err != nil {
-			if err != io.EOF {
-				s.logger.Printf("Read error: %v", err)
+		var msg *protocol.Message
+		if firstMsg != nil {
+			msg = firstMsg
+			firstMsg = nil
+		} else {
+			msg, err = protocol.ReadMessage(rw)
+			if err != nil {
+				if err != io.EOF {
+					s.logger.Printf("Read error: %v", err)
+				}
+				return
 			}
-			return
 		}
 
 		switch msg.Header.Type {
@@ -194,7 +218,7 @@ func (s *Server) handleConnection(conn bt.Conn) {
 			s.handleMove(rw, currentDir, msg.Payload)
 
 		case protocol.MsgDownload:
-			s.handleDownload(rw, currentDir, msg.Payload)
+			s.handleDownload(rw, currentDir, msg.Payload, chunkSize)
 
 		case protocol.MsgUpload:
 			s.handleUpload(rw, currentDir, msg.Payload)
@@ -213,6 +237,75 @@ func (s *Server) handleConnection(conn bt.Conn) {
 			s.sendError(rw, protocol.ErrCodeInvalidRequest, fmt.Sprintf("unknown message type: 0x%02X", msg.Header.Type))
 		}
 	}
+}
+
+// negotiateMTU handles MsgMTU from the client and responds with server's ACL info.
+// Returns the agreed chunk size.
+func (s *Server) negotiateMTU(conn bt.Conn, clientMsg *protocol.Message) int {
+	clientMTU, err := protocol.DecodeMTUPayload(clientMsg.Payload)
+	if err != nil {
+		s.logger.Printf("MTU decode error: %v (using default)", err)
+		return transfer.DefaultChunkSize
+	}
+
+	aclMTU, aclPkts, _ := bt.ReadACLInfo(s.adapter)
+	myChunk := transfer.ComputeChunkSize(aclMTU, aclPkts)
+
+	resp := &protocol.MTUPayload{
+		AclMTU:    aclMTU,
+		AclPkts:   aclPkts,
+		ChunkSize: uint32(myChunk),
+	}
+	protocol.WriteMessage(conn, protocol.MsgMTU, protocol.FlagNone, resp.Encode())
+
+	agreed := myChunk
+	if clientMTU.ChunkSize > 0 && int(clientMTU.ChunkSize) < agreed {
+		agreed = int(clientMTU.ChunkSize)
+	}
+
+	s.logger.Printf("MTU agreed: chunk=%d (client ACL %d×%d, server ACL %d×%d)",
+		agreed, clientMTU.AclMTU, clientMTU.AclPkts, aclMTU, aclPkts)
+	return agreed
+}
+
+// authenticateMsg performs auth using a pre-read message or reads a new one.
+func (s *Server) authenticateMsg(conn bt.Conn, preRead *protocol.Message) (string, string, bool) {
+	var msg *protocol.Message
+	var err error
+	if preRead != nil {
+		msg = preRead
+	} else {
+		msg, err = protocol.ReadMessage(conn)
+		if err != nil {
+			s.logger.Printf("Auth read error: %v", err)
+			return "", "", false
+		}
+	}
+
+	if msg.Header.Type != protocol.MsgAuth {
+		s.sendError(conn, protocol.ErrCodeAuthRequired, "authentication required")
+		return "", "", false
+	}
+
+	username, off, err := protocol.DecodeString(msg.Payload, 0)
+	if err != nil {
+		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid auth payload")
+		return "", "", false
+	}
+	password, _, err := protocol.DecodeString(msg.Payload, off)
+	if err != nil {
+		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid auth payload")
+		return "", "", false
+	}
+
+	if !s.Users.Authenticate(username, password) {
+		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid username or password")
+		s.logger.Printf("Auth failed: %s", username)
+		return "", "", false
+	}
+
+	s.sendOK(conn)
+	return username, password, true
 }
 
 func (s *Server) sendError(conn io.Writer, code uint16, message string) {
@@ -449,7 +542,7 @@ func (s *Server) handleMove(conn io.Writer, currentDir string, payload []byte) {
 	s.sendOK(conn)
 }
 
-func (s *Server) handleDownload(conn io.Writer, currentDir string, payload []byte) {
+func (s *Server) handleDownload(conn io.Writer, currentDir string, payload []byte, chunkSize int) {
 	// Parse download request — supports both legacy (string-only) and new (with compress flag)
 	var target string
 	var compress bool
@@ -481,7 +574,7 @@ func (s *Server) handleDownload(conn io.Writer, currentDir string, payload []byt
 	}
 
 	if info.IsDir() {
-		if err := transfer.SendDir(conn, safePath, transfer.DefaultChunkSize, compress, nil); err != nil {
+		if err := transfer.SendDir(conn, safePath, chunkSize, compress, nil); err != nil {
 			s.logger.Printf("SendDir error: %v", err)
 			// Send error to unblock client's receive loop (may fail if connection is dead)
 			s.sendError(conn, protocol.ErrCodeInterrupted, fmt.Sprintf("download failed: %v", err))
@@ -489,7 +582,7 @@ func (s *Server) handleDownload(conn io.Writer, currentDir string, payload []byt
 		}
 		s.sendOK(conn)
 	} else {
-		if err := transfer.SendFile(conn, safePath, transfer.DefaultChunkSize, compress, nil); err != nil {
+		if err := transfer.SendFile(conn, safePath, chunkSize, compress, nil); err != nil {
 			s.logger.Printf("SendFile error: %v", err)
 			// Send error to unblock client's receive loop (may fail if connection is dead)
 			s.sendError(conn, protocol.ErrCodeInterrupted, fmt.Sprintf("download failed: %v", err))
@@ -546,38 +639,9 @@ func (s *Server) handleUpload(conn io.ReadWriter, currentDir string, payload []b
 	s.sendOK(conn)
 }
 
-// authenticate performs the auth handshake. Returns username, password, and success.
+// authenticate performs the auth handshake (reads from conn). For backward compatibility with tests.
 func (s *Server) authenticate(conn bt.Conn) (string, string, bool) {
-	msg, err := protocol.ReadMessage(conn)
-	if err != nil {
-		s.logger.Printf("Auth read error: %v", err)
-		return "", "", false
-	}
-
-	if msg.Header.Type != protocol.MsgAuth {
-		s.sendError(conn, protocol.ErrCodeAuthRequired, "authentication required")
-		return "", "", false
-	}
-
-	username, off, err := protocol.DecodeString(msg.Payload, 0)
-	if err != nil {
-		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid auth payload")
-		return "", "", false
-	}
-	password, _, err := protocol.DecodeString(msg.Payload, off)
-	if err != nil {
-		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid auth payload")
-		return "", "", false
-	}
-
-	if !s.Users.Authenticate(username, password) {
-		s.sendError(conn, protocol.ErrCodeAuthFailed, "invalid username or password")
-		s.logger.Printf("Auth failed: %s", username)
-		return "", "", false
-	}
-
-	s.sendOK(conn)
-	return username, password, true
+	return s.authenticateMsg(conn, nil)
 }
 
 func (s *Server) handlePasswd(conn io.Writer, authUser string, payload []byte) {

@@ -576,5 +576,57 @@ func ListAdapters() ([]string, error) {
 	return adapters, nil
 }
 
+// ReadACLInfo reads the ACL MTU and buffer count from the adapter via HCIGETDEVINFO.
+// Returns (0, 0, nil) if the adapter name is not in hciN format.
+func ReadACLInfo(adapter string) (aclMTU, aclPkts uint16, err error) {
+	devID := 0
+	if adapter == "" || adapter == "any" {
+		// default to hci0
+	} else if strings.HasPrefix(adapter, "hci") {
+		id, e := strconv.Atoi(adapter[3:])
+		if e == nil {
+			devID = id
+		}
+	} else {
+		return 0, 0, nil // raw address, can't query
+	}
+
+	fd, err := unix.Socket(unix.AF_BLUETOOTH, unix.SOCK_RAW, unix.BTPROTO_HCI)
+	if err != nil {
+		return 0, 0, fmt.Errorf("open HCI socket: %w", err)
+	}
+	defer unix.Close(fd)
+
+	// Use raw byte buffer to avoid Go struct alignment issues.
+	// hci_dev_info layout (from kernel include/net/bluetooth/hci.h):
+	//   offset  0: dev_id      (uint16)
+	//   offset  2: name        (8 bytes)
+	//   offset 10: bdaddr      (6 bytes)
+	//   offset 16: flags       (uint32)
+	//   offset 20: type        (uint8)
+	//   offset 21: features    (8 bytes)
+	//   offset 29: [3 pad]
+	//   offset 32: pkt_type    (uint32)
+	//   offset 36: link_policy (uint32)
+	//   offset 40: link_mode   (uint32)
+	//   offset 44: acl_mtu     (uint16)
+	//   offset 46: acl_pkts    (uint16)
+	//   offset 48: sco_mtu     (uint16)
+	//   offset 50: sco_pkts    (uint16)
+	//   offset 52: stat        (10 x uint32 = 40 bytes)
+	//   total: 92 bytes
+	var buf [256]byte
+	binary.LittleEndian.PutUint16(buf[0:2], uint16(devID))
+
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(hciGetDevInfo), uintptr(unsafe.Pointer(&buf[0])))
+	if errno != 0 {
+		return 0, 0, fmt.Errorf("HCIGETDEVINFO: %w", errno)
+	}
+
+	aclMTU = binary.LittleEndian.Uint16(buf[44:46])
+	aclPkts = binary.LittleEndian.Uint16(buf[46:48])
+	return aclMTU, aclPkts, nil
+}
+
 // Ensure net is used (for potential future use)
 var _ = net.Dial

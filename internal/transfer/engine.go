@@ -20,6 +20,24 @@ const DefaultChunkSize = 1024
 // Useful for high-throughput controllers with large ACL buffers.
 const MaxChunkSize = 64 * 1024
 
+// ComputeChunkSize derives a transfer chunk size from adapter ACL parameters.
+// Uses half the total ACL buffer capacity (acl_mtu * acl_pkts) to leave
+// headroom for flow control. Returns DefaultChunkSize if ACL info is unknown.
+func ComputeChunkSize(aclMTU, aclPkts uint16) int {
+	if aclMTU == 0 || aclPkts == 0 {
+		return DefaultChunkSize
+	}
+	capacity := int(aclMTU) * int(aclPkts)
+	preferred := capacity / 2
+	if preferred < DefaultChunkSize {
+		preferred = DefaultChunkSize
+	}
+	if preferred > MaxChunkSize {
+		preferred = MaxChunkSize
+	}
+	return preferred
+}
+
 // ProgressFunc is called during transfer to report progress.
 // bytesTransferred is the cumulative bytes, totalBytes is the file size.
 type ProgressFunc func(bytesTransferred, totalBytes int64)

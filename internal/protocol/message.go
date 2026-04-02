@@ -23,6 +23,7 @@ const (
 	MsgPasswd   uint8 = 0x0D // Change password
 	MsgShell    uint8 = 0x0E // Start interactive shell session
 	MsgShellIn  uint8 = 0x0F // Shell stdin (client -> server)
+	MsgMTU      uint8 = 0x10 // MTU negotiation (bidirectional)
 
 	// Response types (server -> client)
 	MsgOK          uint8 = 0x80
@@ -520,5 +521,32 @@ func DecodeDownloadRequestPayload(data []byte) (*DownloadRequestPayload, error) 
 	return &DownloadRequestPayload{
 		Path:     path,
 		Compress: compress,
+	}, nil
+}
+
+// MTUPayload carries adapter ACL info and preferred chunk size for negotiation.
+// Wire: acl_mtu(2) + acl_pkts(2) + chunk_size(4) = 8 bytes.
+type MTUPayload struct {
+	AclMTU    uint16 // adapter ACL MTU (0 = unknown)
+	AclPkts   uint16 // adapter ACL buffer slots (0 = unknown)
+	ChunkSize uint32 // preferred transfer chunk size
+}
+
+func (m *MTUPayload) Encode() []byte {
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint16(buf[0:2], m.AclMTU)
+	binary.LittleEndian.PutUint16(buf[2:4], m.AclPkts)
+	binary.LittleEndian.PutUint32(buf[4:8], m.ChunkSize)
+	return buf
+}
+
+func DecodeMTUPayload(data []byte) (*MTUPayload, error) {
+	if len(data) < 8 {
+		return nil, fmt.Errorf("insufficient data for MTUPayload: %d bytes", len(data))
+	}
+	return &MTUPayload{
+		AclMTU:    binary.LittleEndian.Uint16(data[0:2]),
+		AclPkts:   binary.LittleEndian.Uint16(data[2:4]),
+		ChunkSize: binary.LittleEndian.Uint32(data[4:8]),
 	}, nil
 }

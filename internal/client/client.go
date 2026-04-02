@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -23,6 +24,7 @@ type Client struct {
 	Username  string
 	Password  string
 	Encrypted bool
+	ChunkSize int // agreed chunk size from MTU negotiation; 0 = use default
 }
 
 // New creates a new Client.
@@ -33,8 +35,8 @@ func New(transport bt.Transport, adapter string) *Client {
 	}
 }
 
-// Connect connects to a remote server. If Username is set, sends authentication
-// and establishes AES-256-GCM encrypted channel.
+// Connect connects to a remote server. Negotiates MTU, then optionally
+// authenticates and establishes AES-256-GCM encrypted channel.
 func (c *Client) Connect(remoteAddr string, channel uint8) error {
 	conn, err := c.transport.Connect(c.adapter, remoteAddr, channel)
 	if err != nil {
@@ -42,6 +44,9 @@ func (c *Client) Connect(remoteAddr string, channel uint8) error {
 	}
 	c.conn = conn
 	c.rw = conn // default: unencrypted
+
+	// MTU negotiation — exchange ACL info with server to agree on chunk size
+	c.ChunkSize = c.negotiateMTU()
 
 	// Send auth if credentials are set
 	if c.Username != "" {
@@ -75,6 +80,56 @@ func (c *Client) Connect(remoteAddr string, channel uint8) error {
 func (c *Client) ConnectWithConn(conn bt.Conn) {
 	c.conn = conn
 	c.rw = conn
+}
+
+// negotiateMTU exchanges ACL adapter info with the server and agrees on a chunk size.
+// Returns the agreed chunk size, or DefaultChunkSize on failure.
+func (c *Client) negotiateMTU() int {
+	aclMTU, aclPkts, _ := bt.ReadACLInfo(c.adapter)
+	myChunk := transfer.ComputeChunkSize(aclMTU, aclPkts)
+
+	payload := &protocol.MTUPayload{
+		AclMTU:    aclMTU,
+		AclPkts:   aclPkts,
+		ChunkSize: uint32(myChunk),
+	}
+	if err := protocol.WriteMessage(c.conn, protocol.MsgMTU, protocol.FlagNone, payload.Encode()); err != nil {
+		log.Printf("[client] MTU send failed: %v (using default %d)", err, transfer.DefaultChunkSize)
+		return transfer.DefaultChunkSize
+	}
+
+	msg, err := protocol.ReadMessage(c.conn)
+	if err != nil {
+		log.Printf("[client] MTU read failed: %v (using default %d)", err, transfer.DefaultChunkSize)
+		return transfer.DefaultChunkSize
+	}
+	if msg.Header.Type != protocol.MsgMTU {
+		log.Printf("[client] expected MsgMTU response, got 0x%02X (using default %d)", msg.Header.Type, transfer.DefaultChunkSize)
+		return transfer.DefaultChunkSize
+	}
+
+	serverMTU, err := protocol.DecodeMTUPayload(msg.Payload)
+	if err != nil {
+		log.Printf("[client] MTU decode failed: %v (using default %d)", err, transfer.DefaultChunkSize)
+		return transfer.DefaultChunkSize
+	}
+
+	agreed := myChunk
+	if serverMTU.ChunkSize > 0 && int(serverMTU.ChunkSize) < agreed {
+		agreed = int(serverMTU.ChunkSize)
+	}
+
+	log.Printf("[client] MTU agreed: chunk=%d (local ACL %d×%d, remote ACL %d×%d)",
+		agreed, aclMTU, aclPkts, serverMTU.AclMTU, serverMTU.AclPkts)
+	return agreed
+}
+
+// chunkSize returns the effective chunk size for transfers.
+func (c *Client) chunkSize() int {
+	if c.ChunkSize > 0 {
+		return c.ChunkSize
+	}
+	return transfer.DefaultChunkSize
 }
 
 // Disconnect closes the connection.
@@ -342,7 +397,7 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 	req := &protocol.UploadRequestPayload{
 		Path:      remotePath,
 		TotalSize: totalSize,
-		ChunkSize: uint32(transfer.DefaultChunkSize),
+		ChunkSize: uint32(c.chunkSize()),
 		IsDir:     isDir,
 		Compress:  c.Compress,
 	}
@@ -357,7 +412,7 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 	}
 
 	if isDir {
-		if err := transfer.SendDir(c.rw, localPath, transfer.DefaultChunkSize, c.Compress, progressFn); err != nil {
+		if err := transfer.SendDir(c.rw, localPath, c.chunkSize(), c.Compress, progressFn); err != nil {
 			// Send TransferEnd (to close any incomplete file) + MsgOK (to end directory)
 			// so the server's ReceiveDir can drain and respond with an error.
 			endPayload := &protocol.TransferEndPayload{TotalCRC32: 0}
@@ -368,7 +423,7 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 		}
 		protocol.WriteMessage(c.rw, protocol.MsgOK, protocol.FlagNone, nil)
 	} else {
-		if err := transfer.SendFile(c.rw, localPath, transfer.DefaultChunkSize, c.Compress, progressFn); err != nil {
+		if err := transfer.SendFile(c.rw, localPath, c.chunkSize(), c.Compress, progressFn); err != nil {
 			// Send TransferEnd to unblock server's receive loop.
 			// CRC will mismatch — server will respond with error, keeping stream in sync.
 			endPayload := &protocol.TransferEndPayload{TotalCRC32: 0}
