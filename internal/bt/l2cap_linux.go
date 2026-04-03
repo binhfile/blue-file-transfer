@@ -266,8 +266,9 @@ func (t *L2CAPTransport) Listen(adapter string, channel uint8) (Listener, error)
 		return nil, fmt.Errorf("create L2CAP socket: %w", err)
 	}
 
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, sockBufSize)
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, sockBufSize)
+	lBufSize := dynamicSockBuf(adapter)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, lBufSize)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, lBufSize)
 	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 
 	// Request maximum MTU
@@ -320,8 +321,9 @@ func (t *L2CAPTransport) Connect(adapter string, remoteAddr string, channel uint
 		return nil, fmt.Errorf("create L2CAP socket: %w", err)
 	}
 
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, sockBufSize)
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, sockBufSize)
+	cBufSize := dynamicSockBuf(adapter)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, cBufSize)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, cBufSize)
 
 	// Request maximum MTU
 	mtu := t.MTU

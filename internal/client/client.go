@@ -412,7 +412,7 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 	}
 
 	if isDir {
-		if err := transfer.SendDir(c.rw, localPath, c.chunkSize(), c.Compress, progressFn); err != nil {
+		if err := transfer.PipelineSendDir(c.rw, localPath, c.chunkSize(), c.Compress, progressFn); err != nil {
 			// Send TransferEnd (to close any incomplete file) + MsgOK (to end directory)
 			// so the server's ReceiveDir can drain and respond with an error.
 			endPayload := &protocol.TransferEndPayload{TotalCRC32: 0}
@@ -423,7 +423,7 @@ func (c *Client) Upload(localPath, remotePath string, progressFn transfer.Progre
 		}
 		protocol.WriteMessage(c.rw, protocol.MsgOK, protocol.FlagNone, nil)
 	} else {
-		if err := transfer.SendFile(c.rw, localPath, c.chunkSize(), c.Compress, progressFn); err != nil {
+		if err := transfer.PipelineSendFile(c.rw, localPath, c.chunkSize(), c.Compress, progressFn); err != nil {
 			// Send TransferEnd to unblock server's receive loop.
 			// CRC will mismatch — server will respond with error, keeping stream in sync.
 			endPayload := &protocol.TransferEndPayload{TotalCRC32: 0}

@@ -11,7 +11,9 @@ build:
 # Build for Linux amd64
 linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME)-linux-amd64 ./cmd/bft/
-
+# Build for Linux ard64
+linux-arm64:
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 /usr/local/go/bin/go build $(LDFLAGS) -o $(BINARY_NAME)-linux-arm64 ./cmd/bft/
 # Build for Windows amd64
 windows:
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY_NAME)-windows-amd64.exe ./cmd/bft/

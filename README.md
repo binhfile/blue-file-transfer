@@ -445,6 +445,7 @@ bft server [options]
 | `--rfcomm` | (default: L2CAP) | Use RFCOMM transport instead of L2CAP |
 | `--users-file` | (none) | Users file for auth + encryption |
 | `--no-exec` | (exec ON) | Disable remote command execution |
+| `--max-clients` | unlimited | Max concurrent connections (oldest dropped when exceeded) |
 
 **Examples:**
 
@@ -460,6 +461,9 @@ sudo bft server --dir /home/user/shared --rfcomm --channel 5
 
 # Disable remote exec
 sudo bft server --dir /home/user/shared --no-exec
+
+# Limit concurrent connections (oldest dropped when exceeded)
+sudo bft server --dir /home/user/shared --max-clients 3
 ```
 
 The server will display:
@@ -634,7 +638,7 @@ bft> compress off
 ```
 
 When compression is enabled:
-- Each data chunk is compressed with **DEFLATE (BestSpeed)** before sending
+- Each data chunk is compressed with **DEFLATE (BestSpeed)** using a streaming compressor that reuses the encoder across chunks for lower CPU overhead (53x faster than per-chunk allocation)
 - If compression doesn't reduce the chunk size, it is sent uncompressed automatically
 - CRC32 integrity check is always on the **original** (uncompressed) data
 - The receiver automatically detects compressed vs uncompressed chunks
@@ -661,6 +665,32 @@ When compression is enabled:
 ```bash
 bft> exit
 ```
+
+### Web GUI
+
+BFT includes a browser-based file manager for remote file operations.
+
+```bash
+# Start web GUI connected to a BFT server
+sudo bft web --server 00:1A:7D:DA:71:22 --port 8080 --web-user admin --web-pass secret
+```
+
+Open `http://localhost:8080` in a browser. Features:
+- Browse, upload, download, and delete files
+- Create folders, execute remote commands via terminal
+- **Connection status bar** showing live connected/disconnected state with server address
+- **Connect/Disconnect button** to manage the Bluetooth connection from the browser
+- Transfer progress overlay with speed, elapsed time, and ETA
+- Status auto-refreshes every 5 seconds
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--server` | (required) | BFT server Bluetooth address |
+| `--port` | `8080` | Web server port |
+| `--web-user` | `admin` | Web login username |
+| `--web-pass` | `quansu1!` | Web login password |
+
+All connection options (`--channel`, `--rfcomm`, `--user`, `--pass`) are also supported.
 
 ### Scanning for Devices
 
@@ -722,6 +752,25 @@ sudo bft benchmark \
   --remote-file testfile.bin \
   --local-dir /tmp/bench
 ```
+
+### MTU Negotiation
+
+At connection time, client and server exchange ACL adapter info (MTU and buffer slots) and agree on an optimal transfer chunk size. This happens automatically and is backward-compatible with older versions.
+
+```
+Chunk size = min(client_preferred, server_preferred)
+Preferred  = acl_mtu × acl_pkts / 2    (clamped to 1KB–64KB)
+```
+
+Adapters with large buffers automatically use larger chunks for higher throughput. Small-buffer adapters (e.g., CSR8510) stay at safe sizes to avoid flow control stalls.
+
+### Pipeline I/O
+
+File transfers use a pipelined architecture with separate reader and writer goroutines:
+- **Reader goroutine**: reads file, computes CRC32, compresses (if enabled), encodes protocol messages
+- **Writer goroutine**: sends pre-encoded messages over the Bluetooth socket
+- 4-chunk send-ahead window overlaps disk I/O with network I/O
+- On Bluetooth (where socket writes block for 5-50ms), this provides ~30-50% speedup
 
 ### Expected Performance
 
@@ -857,5 +906,7 @@ sudo systemctl enable bluetooth
 ### Transfer interrupted / Connection dropped
 
 - BFT detects disconnections and reports clean error messages
-- Re-connect and retry the transfer
+- **Transfer recovery**: if a transfer fails mid-stream (CRC mismatch, disk error), the protocol stream is automatically drained and re-synchronized. The session remains usable for subsequent commands (ls, download, upload, etc.) without reconnecting
+- Partial files are automatically cleaned up on failure
+- If the connection drops completely, re-connect and retry the transfer
 - If frequent drops occur, reduce distance between adapters or check for USB bandwidth contention (avoid using USB hubs)

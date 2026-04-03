@@ -294,9 +294,10 @@ func (t *LinuxTransport) Listen(adapter string, channel uint8) (Listener, error)
 		return nil, fmt.Errorf("create socket: %w", err)
 	}
 
-	// Set socket options
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, sockBufSize)
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, sockBufSize)
+	// Dynamic socket buffer based on ACL capacity
+	bufSize := dynamicSockBuf(adapter)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, bufSize)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, bufSize)
 	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 
 	sa := &unix.SockaddrRFCOMM{
@@ -338,9 +339,10 @@ func (t *LinuxTransport) Connect(adapter string, remoteAddr string, channel uint
 		return nil, fmt.Errorf("create socket: %w", err)
 	}
 
-	// Set socket options
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, sockBufSize)
-	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, sockBufSize)
+	// Dynamic socket buffer based on ACL capacity
+	cBufSize := dynamicSockBuf(adapter)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SNDBUF, cBufSize)
+	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, cBufSize)
 
 	// Bind to specific adapter
 	bindSa := &unix.SockaddrRFCOMM{
@@ -626,6 +628,23 @@ func ReadACLInfo(adapter string) (aclMTU, aclPkts uint16, err error) {
 	aclMTU = binary.LittleEndian.Uint16(buf[44:46])
 	aclPkts = binary.LittleEndian.Uint16(buf[46:48])
 	return aclMTU, aclPkts, nil
+}
+
+// dynamicSockBuf returns an optimal socket buffer size based on the adapter's
+// ACL capacity. Falls back to sockBufSize if ACL info is unavailable.
+func dynamicSockBuf(adapter string) int {
+	aclMTU, aclPkts, err := ReadACLInfo(adapter)
+	if err != nil || aclMTU == 0 || aclPkts == 0 {
+		return sockBufSize
+	}
+	buf := int(aclMTU) * int(aclPkts) * 2
+	if buf < 8192 {
+		buf = 8192
+	}
+	if buf > 256*1024 {
+		buf = 256 * 1024
+	}
+	return buf
 }
 
 // Ensure net is used (for potential future use)

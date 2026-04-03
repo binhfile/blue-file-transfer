@@ -574,7 +574,7 @@ func (s *Server) handleDownload(conn io.Writer, currentDir string, payload []byt
 	}
 
 	if info.IsDir() {
-		if err := transfer.SendDir(conn, safePath, chunkSize, compress, nil); err != nil {
+		if err := transfer.PipelineSendDir(conn, safePath, chunkSize, compress, nil); err != nil {
 			s.logger.Printf("SendDir error: %v", err)
 			// Send error to unblock client's receive loop (may fail if connection is dead)
 			s.sendError(conn, protocol.ErrCodeInterrupted, fmt.Sprintf("download failed: %v", err))
@@ -582,7 +582,7 @@ func (s *Server) handleDownload(conn io.Writer, currentDir string, payload []byt
 		}
 		s.sendOK(conn)
 	} else {
-		if err := transfer.SendFile(conn, safePath, chunkSize, compress, nil); err != nil {
+		if err := transfer.PipelineSendFile(conn, safePath, chunkSize, compress, nil); err != nil {
 			s.logger.Printf("SendFile error: %v", err)
 			// Send error to unblock client's receive loop (may fail if connection is dead)
 			s.sendError(conn, protocol.ErrCodeInterrupted, fmt.Sprintf("download failed: %v", err))
