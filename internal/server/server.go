@@ -28,6 +28,8 @@ type Server struct {
 	AllowExec  bool
 	Users      *auth.UserStore
 	MaxClients int // max concurrent connections; 0 = unlimited
+	FileUID    int // UID for created files (-1 = don't chown)
+	FileGID    int // GID for created files (-1 = don't chown)
 	logger     *log.Logger
 
 	mu          sync.Mutex
@@ -58,6 +60,8 @@ func New(transport bt.Transport, rootDir, adapter string, channel uint8) (*Serve
 		rootDir:   absRoot,
 		adapter:   adapter,
 		channel:   channel,
+		FileUID:   -1,
+		FileGID:   -1,
 		logger:    log.New(os.Stderr, "[server] ", log.LstdFlags),
 	}, nil
 }
@@ -317,6 +321,27 @@ func (s *Server) sendOK(conn io.Writer) {
 	protocol.WriteMessage(conn, protocol.MsgOK, protocol.FlagNone, nil)
 }
 
+// chownTree recursively sets ownership on a path if FileUID/FileGID are configured.
+// Used when the server runs as root but files should be owned by a normal user.
+func (s *Server) chownTree(path string) {
+	if s.FileUID < 0 && s.FileGID < 0 {
+		return
+	}
+	uid, gid := s.FileUID, s.FileGID
+	if uid < 0 {
+		uid = os.Getuid()
+	}
+	if gid < 0 {
+		gid = os.Getgid()
+	}
+	filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+		if err == nil {
+			os.Lchown(p, uid, gid)
+		}
+		return nil
+	})
+}
+
 func (s *Server) handlePwd(conn io.Writer, currentDir string) {
 	relPath, err := filepath.Rel(s.rootDir, currentDir)
 	if err != nil {
@@ -484,6 +509,7 @@ func (s *Server) handleMkdir(conn io.Writer, currentDir string, payload []byte) 
 		s.sendError(conn, protocol.ErrCodePermission, err.Error())
 		return
 	}
+	s.chownTree(safePath)
 
 	s.sendOK(conn)
 }
@@ -511,6 +537,7 @@ func (s *Server) handleCopy(conn io.Writer, currentDir string, payload []byte) {
 		s.sendError(conn, protocol.ErrCodePermission, err.Error())
 		return
 	}
+	s.chownTree(safeDst)
 
 	s.sendOK(conn)
 }
@@ -538,6 +565,7 @@ func (s *Server) handleMove(conn io.Writer, currentDir string, payload []byte) {
 		s.sendError(conn, protocol.ErrCodePermission, err.Error())
 		return
 	}
+	s.chownTree(safeDst)
 
 	s.sendOK(conn)
 }
@@ -636,6 +664,7 @@ func (s *Server) handleUpload(conn io.ReadWriter, currentDir string, payload []b
 		}
 	}
 
+	s.chownTree(safePath)
 	s.sendOK(conn)
 }
 

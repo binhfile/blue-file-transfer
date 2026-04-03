@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 
@@ -110,6 +111,7 @@ Server options:
   --no-exec            Disable remote command execution (enabled by default)
   --users-file <path>  Users file for authentication (default: none, no auth)
   --max-clients <n>    Max concurrent connections; oldest dropped when exceeded
+  --file-user <user>   Own created files as this user (for root-run servers)
 
 Connection options (client, one-shot, benchmark):
   --adapter <hci>      Bluetooth adapter (default: hci0)
@@ -192,6 +194,19 @@ func runServer(args []string) {
 	}
 	srv.AllowExec = allowExec
 	srv.MaxClients = maxClients
+
+	// --file-user: created files will be chowned to this user
+	if v, ok := flags["file-user"]; ok {
+		u, err := user.Lookup(v)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: unknown user '%s': %v\n", v, err)
+			os.Exit(1)
+		}
+		uid, _ := strconv.Atoi(u.Uid)
+		gid, _ := strconv.Atoi(u.Gid)
+		srv.FileUID = uid
+		srv.FileGID = gid
+	}
 
 	if usersFile != "" {
 		users, err := auth.NewUserStore(usersFile)
