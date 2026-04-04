@@ -66,6 +66,7 @@ jobs:
           cp README.md "dist/${DIST_DIR}/"
           if [ "${{ matrix.os }}" = "linux" ]; then
             cp scripts/install-server.sh "dist/${DIST_DIR}/"
+            cp scripts/install-web.sh "dist/${DIST_DIR}/"
           fi
           cd dist
           tar czf "${DIST_DIR}.tar.gz" "$DIST_DIR"
