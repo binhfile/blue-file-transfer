@@ -2,7 +2,7 @@ BINARY_NAME=bft
 VERSION=0.1.0
 LDFLAGS=-ldflags="-s -w -X main.version=$(VERSION)"
 
-.PHONY: build linux windows test test-integration bench coverage clean
+.PHONY: build linux linux-arm64 windows all test test-short test-integration bench coverage check clean dist dist-linux dist-linux-arm64
 
 # Build for current platform
 build:
@@ -47,6 +47,25 @@ coverage:
 check:
 	go vet ./...
 
+# Package release tarballs (binary + install scripts)
+dist-linux: linux
+	tar czf $(BINARY_NAME)-linux-amd64.tar.gz \
+		-C . $(BINARY_NAME)-linux-amd64 \
+		-C . scripts/install-server.sh scripts/install-web.sh \
+		README.md
+	@echo "Created $(BINARY_NAME)-linux-amd64.tar.gz"
+
+dist-linux-arm64: linux-arm64
+	tar czf $(BINARY_NAME)-linux-arm64.tar.gz \
+		-C . $(BINARY_NAME)-linux-arm64 \
+		-C . scripts/install-server.sh scripts/install-web.sh \
+		README.md
+	@echo "Created $(BINARY_NAME)-linux-arm64.tar.gz"
+
+dist: dist-linux dist-linux-arm64
+	@echo "All release tarballs created"
+
 clean:
-	rm -f $(BINARY_NAME) $(BINARY_NAME)-linux-amd64 $(BINARY_NAME)-windows-amd64.exe
+	rm -f $(BINARY_NAME) $(BINARY_NAME)-linux-amd64 $(BINARY_NAME)-windows-amd64.exe $(BINARY_NAME)-linux-arm64
+	rm -f $(BINARY_NAME)-linux-amd64.tar.gz $(BINARY_NAME)-linux-arm64.tar.gz
 	rm -f coverage.out coverage.html
