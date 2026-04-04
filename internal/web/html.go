@@ -439,8 +439,7 @@ async function doRm(path) {
 }
 
 function showUpload() {
-  const area = document.getElementById('uploadArea');
-  area.style.display = area.style.display === 'none' ? '' : 'none';
+  document.getElementById('fileInput').click();
 }
 
 function handleDrop(e) {
